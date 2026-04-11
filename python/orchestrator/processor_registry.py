@@ -353,7 +353,14 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
 }
 
 
-def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
+def run_registered_processor(
+    job_key: str,
+    db: Any,
+    raw_config: dict[str, Any],
+    *,
+    verbose: bool = False,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     entry = _PROCESSOR_DISPATCH.get(job_key)
     if entry is None:
         in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
@@ -363,13 +370,18 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], 
             f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
         )
     processor_fn, arg_factory = entry
-    # Forward verbose if the processor accepts it (keyword-only to avoid breaking positional signatures).
+    # Forward verbose and payload if the processor accepts them (keyword-only to
+    # avoid breaking positional signatures). This is how on-demand scoped runs
+    # thread worker_jobs.payload_json through to jobs that declare a
+    # `payload: dict | None = None` kwarg (e.g. compute_counterintel_pipeline).
     import inspect
     sig = inspect.signature(processor_fn)
+    fn_kwargs: dict[str, Any] = {}
     if "verbose" in sig.parameters:
-        raw_result = processor_fn(*arg_factory(db, raw_config), verbose=verbose)
-    else:
-        raw_result = processor_fn(*arg_factory(db, raw_config))
+        fn_kwargs["verbose"] = verbose
+    if payload is not None and "payload" in sig.parameters:
+        fn_kwargs["payload"] = payload
+    raw_result = processor_fn(*arg_factory(db, raw_config), **fn_kwargs)
     # Normalize: if the processor returned a JobResult object instead of a dict,
     # convert it so from_raw() can process it.
     if isinstance(raw_result, JobResult):

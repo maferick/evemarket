@@ -97,12 +97,40 @@ if ($evidencePaths !== []) {
     }
 }
 
-// Handle on-demand intelligence computation
+// Handle on-demand intelligence computation.
+//
+// This used to call a 415-line PHP helper that duplicated the Python
+// counterintel scoring inline. That violated the
+// "PHP = control plane, Python = execution plane" contract in AGENTS.md.
+// The helper is now a dispatcher: it enqueues a scoped single-character run
+// into worker_jobs with payload_json.scope = 'character' and returns
+// immediately. The Python worker pool drains it and writes the same tables
+// the scheduled batch does, with no duplicated formulae.
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['compute_intelligence']) && $characterId > 0) {
     $result = compute_character_intelligence_on_demand($characterId);
-    flash('success', (string) ($result['message'] ?? 'Computation finished.'));
+    $flashType = ($result['ok'] ?? false) ? 'info' : 'error';
+    $message = (string) ($result['message'] ?? 'Analysis could not be queued.');
+    if (($result['ok'] ?? false) && ($result['job_id'] ?? 0) > 0) {
+        $message .= ' (job #' . (int) $result['job_id'] . ')';
+    }
+    flash($flashType, $message);
     header('Location: /battle-intelligence/character.php?character_id=' . $characterId);
     exit;
+}
+
+// Probe for an in-flight on-demand refresh so the template can show a
+// non-blocking "analyzing…" banner while the Python worker catches up.
+$onDemandJob = null;
+if ($characterId > 0) {
+    $onDemandJob = db_select_one(
+        "SELECT id, status, attempts, last_error, created_at, updated_at
+           FROM worker_jobs
+          WHERE job_key = 'compute_counterintel_pipeline'
+            AND unique_key = ?
+            AND status IN ('queued','running','retry')
+          LIMIT 1",
+        ['on_demand:character:' . $characterId]
+    );
 }
 
 // Handle feedback submission
@@ -131,15 +159,48 @@ include __DIR__ . '/../../src/views/partials/header.php';
             <a href="/battle-intelligence/pilot-lookup.php?character_id=<?= $characterId ?>" class="text-sm text-accent">Pilot lookup &rarr;</a>
         <?php endif; ?>
     </div>
+    <?php if (is_array($onDemandJob)): ?>
+        <?php
+            $odStatus = (string) ($onDemandJob['status'] ?? '');
+            $odJobId = (int) ($onDemandJob['id'] ?? 0);
+            $odCreated = (string) ($onDemandJob['created_at'] ?? '');
+            $odElapsed = $odCreated !== '' ? max(0, time() - strtotime($odCreated . ' UTC')) : 0;
+            $odBadgeLabel = $odStatus === 'running' ? 'Analyzing…' : ($odStatus === 'retry' ? 'Retrying…' : 'Queued');
+        ?>
+        <div class="mt-4 rounded border border-cyan-500/30 bg-cyan-950/30 px-4 py-2.5 text-sm text-cyan-100"
+             id="on-demand-job-banner"
+             data-job-id="<?= $odJobId ?>"
+             data-job-status="<?= htmlspecialchars($odStatus, ENT_QUOTES) ?>">
+            <strong><?= htmlspecialchars($odBadgeLabel, ENT_QUOTES) ?></strong>
+            — a single-character counter-intel refresh (job #<?= $odJobId ?>) is <?= htmlspecialchars($odStatus, ENT_QUOTES) ?>.
+            <?php if ($odElapsed < 90): ?>
+                This page will refresh automatically in 5 seconds to show fresh scores.
+            <?php else: ?>
+                Analysis is taking longer than expected. Refresh to check, or continue browsing — results will appear on the next page load.
+            <?php endif; ?>
+        </div>
+        <?php if ($odElapsed < 90): ?>
+            <script>
+                // Soft auto-refresh while the on-demand counterintel run is in flight.
+                // Uses setTimeout instead of <meta http-equiv="refresh"> because the
+                // header include has already emitted <head>.
+                setTimeout(function () {
+                    window.location.href = '/battle-intelligence/character.php?character_id=<?= (int) $characterId ?>';
+                }, 5000);
+            </script>
+        <?php endif; ?>
+    <?php endif; ?>
     <?php if ($blended === null && !is_array($character)): ?>
         <div class="mt-4">
             <p class="text-sm text-muted">No character intelligence found.</p>
-            <?php if ($characterId > 0): ?>
+            <?php if ($characterId > 0 && !is_array($onDemandJob)): ?>
                 <form method="POST" class="mt-3 inline">
                     <input type="hidden" name="compute_intelligence" value="1">
                     <button type="submit" class="btn btn-sm btn-accent">Compute now</button>
-                    <span class="ml-2 text-xs text-muted">Analyze this character's battle history and generate intelligence scores immediately.</span>
+                    <span class="ml-2 text-xs text-muted">Queue a single-character run of the Python counter-intel pipeline. Results appear in a few seconds — the page auto-refreshes.</span>
                 </form>
+            <?php elseif ($characterId > 0): ?>
+                <p class="mt-3 text-xs text-muted">A refresh job is already in flight for this character — see the banner above.</p>
             <?php endif; ?>
         </div>
     <?php else: ?>
@@ -190,10 +251,15 @@ include __DIR__ . '/../../src/views/partials/header.php';
         <?php if ($dataSource === 'suspicion_v2'): ?>
             <div class="mt-3 rounded border border-amber-500/30 bg-amber-950/30 px-4 py-2.5 text-sm text-amber-200/90">
                 <strong>Lane 1 limited</strong> &mdash; showing batch suspicion scores. Full counter-intel pipeline has not processed this character.
-                <form method="POST" class="mt-1.5 inline">
-                    <input type="hidden" name="compute_intelligence" value="1">
-                    <button type="submit" class="btn btn-sm btn-accent">Compute full analysis</button>
-                </form>
+                <?php if (!is_array($onDemandJob)): ?>
+                    <form method="POST" class="mt-1.5 inline">
+                        <input type="hidden" name="compute_intelligence" value="1">
+                        <button type="submit" class="btn btn-sm btn-accent">Queue full analysis</button>
+                        <span class="ml-2 text-xs text-amber-200/70">Runs the Python counter-intel pipeline for this character; page auto-refreshes when done.</span>
+                    </form>
+                <?php else: ?>
+                    <span class="mt-1.5 inline-block text-xs text-amber-200/70">Refresh already in flight (job #<?= (int) $onDemandJob['id'] ?>) &mdash; see banner above.</span>
+                <?php endif; ?>
             </div>
         <?php elseif ($dataSource === 'below_threshold'): ?>
             <div class="mt-3 rounded border border-slate-500/30 bg-slate-800/50 px-4 py-2.5 text-sm text-slate-300">

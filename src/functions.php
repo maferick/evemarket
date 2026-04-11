@@ -4558,7 +4558,7 @@ function supplycore_authoritative_job_registry(): array
         'compute_battle_anomalies' => ['label' => 'Battle Anomalies', 'description' => 'Compute battle anomaly detections.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 23, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_battle_rollups' => ['label' => 'Battle Rollups', 'description' => 'Aggregate battle telemetry rollups.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 21, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_battle_target_metrics' => ['label' => 'Battle Target Metrics', 'description' => 'Compute target-level battle metrics.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 22, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
-        'compute_counterintel_pipeline' => ['label' => 'Counterintel Pipeline', 'description' => 'Counter-intelligence batch model with battle/org/graph evidence.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'high', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_counterintel_pipeline' => ['label' => 'Counterintel Pipeline', 'description' => 'Counter-intelligence batch model with battle/org/graph evidence.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'high', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'accepts_scoped_payload' => true, 'scoped_payload_schema' => ['scope' => 'character', 'character_id' => 'int']],
         'compute_suspicion_scores' => ['label' => 'Suspicion Scores', 'description' => 'Compute baseline suspicion scores.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_graph_sync_doctrine_dependency' => ['label' => 'Graph Doctrine Dependency', 'description' => 'Child graph task for doctrine dependency links.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
         'compute_graph_sync_battle_intelligence' => ['label' => 'Graph Battle Intelligence', 'description' => 'Child graph task for battle-intelligence edge updates.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
@@ -24972,14 +24972,25 @@ function battle_intelligence_battle_data(string $battleId): array
 }
 
 // ---------------------------------------------------------------------------
-// On-demand character intelligence computation
+// On-demand character intelligence computation (dispatcher — metadata only)
 // ---------------------------------------------------------------------------
 
 /**
- * Compute character intelligence scores on-demand for a single character.
+ * Enqueue a scoped single-character run of the Python counterintel pipeline.
  *
- * Replicates the core scoring logic from the Python compute_counterintel_pipeline
- * job so that users can get immediate results without waiting for the scheduler.
+ * Historically this function duplicated ~415 lines of Python pipeline scoring
+ * logic in PHP so the character profile page could show immediate results.
+ * That violated the "PHP = control plane, Python = execution plane"
+ * architectural contract in AGENTS.md and produced a second source of truth
+ * for review_priority_score that drifted from the canonical Python model.
+ *
+ * The dispatcher below is pure control-plane: it validates the caller, checks
+ * for an already-queued refresh, and inserts a worker_jobs row with
+ * `payload_json = {"scope":"character","character_id":N,"on_demand":true}`.
+ * The Python worker pool drains this job (worker_pool.py._process_job →
+ * processor_registry.run_registered_processor → run_compute_counterintel_pipeline
+ * with the scoped payload path) and performs identical scoring to the
+ * scheduled batch — no duplicated formulae, no drift.
  */
 function compute_character_intelligence_on_demand(int $characterId): array
 {
@@ -24987,414 +24998,104 @@ function compute_character_intelligence_on_demand(int $characterId): array
         return ['ok' => false, 'message' => 'Invalid character ID.'];
     }
 
-    // 1. Find all eligible battles the character participated in
-    $participations = db_select(
-        'SELECT bp.battle_id, bp.side_key, bp.corporation_id, bp.alliance_id,
-                COALESCE(cgi.bridge_score, 0) AS bridge_score
-         FROM battle_participants bp
-         LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = bp.character_id
-         WHERE bp.character_id = ?
-           AND bp.battle_id IN (
-               SELECT br.battle_id FROM battle_rollups br
-               WHERE br.eligible_for_suspicion = 1
-                 AND br.participant_count >= 20
-           )',
-        [$characterId]
+    $uniqueKey = 'on_demand:character:' . $characterId;
+
+    // Idempotency: if a refresh for this character is already queued or
+    // running, surface the existing job_id instead of enqueuing a duplicate.
+    $existing = db_select_one(
+        "SELECT id, status
+           FROM worker_jobs
+          WHERE job_key = 'compute_counterintel_pipeline'
+            AND unique_key = ?
+            AND status IN ('queued','running','retry')
+          LIMIT 1",
+        [$uniqueKey]
     );
 
-    if ($participations === []) {
-        return ['ok' => false, 'message' => 'No eligible battle participation found for this character. The character must appear in battles with 20+ participants to generate intelligence.'];
+    if ($existing) {
+        return [
+            'ok' => true,
+            'status' => 'already_queued',
+            'job_id' => (int) ($existing['id'] ?? 0),
+            'worker_status' => (string) ($existing['status'] ?? ''),
+            'message' => 'Analysis already in progress for this character — results in a few seconds.',
+        ];
     }
 
-    $battleIds = array_values(array_unique(array_column($participations, 'battle_id')));
-    if ($battleIds === []) {
-        return ['ok' => false, 'message' => 'No battle IDs found.'];
-    }
+    $definitions = function_exists('db_worker_job_definitions') ? db_worker_job_definitions() : [];
+    $definition = is_array($definitions['compute_counterintel_pipeline'] ?? null)
+        ? $definitions['compute_counterintel_pipeline']
+        : [];
 
-    // 2. Fetch overperformance scores for those battles
-    $placeholders = implode(',', array_fill(0, count($battleIds), '?'));
-    $overRows = db_select(
-        "SELECT battle_id, side_key, anomaly_class, sustain_lift_score
-         FROM battle_enemy_overperformance_scores
-         WHERE battle_id IN ({$placeholders})",
-        $battleIds
-    );
+    $payload = [
+        'scope' => 'character',
+        'character_id' => $characterId,
+        'on_demand' => true,
+        'queued_at' => gmdate(DATE_ATOM),
+        'source' => 'compute_character_intelligence_on_demand',
+    ];
 
-    $anomalousBattles = [];
-    $controlBattles = [];
-    $sustainByBattleSide = [];
-    foreach ($overRows as $row) {
-        $key = $row['battle_id'] . '|' . $row['side_key'];
-        $sustainByBattleSide[$key] = (float) ($row['sustain_lift_score'] ?? 0.0);
-        if ($row['anomaly_class'] === 'high_enemy_overperformance') {
-            $anomalousBattles[$key] = true;
-        } else {
-            $controlBattles[$key] = true;
-        }
-    }
-
-    // 3. Compute features for this character
-    $anomalyHits = 0;
-    $controlHits = 0;
-    $sustainLifts = [];
-    $bridgeScores = [];
-    $anomalousBattleIds = [];
-
-    foreach ($participations as $row) {
-        $battleId = (string) $row['battle_id'];
-        $sideKey = (string) ($row['side_key'] ?? 'unknown');
-        $key = $battleId . '|' . $sideKey;
-
-        if (isset($anomalousBattles[$key])) {
-            $anomalyHits++;
-            $anomalousBattleIds[$battleId] = true;
-        }
-        if (isset($controlBattles[$key])) {
-            $controlHits++;
-        }
-
-        $bridgeScores[] = (float) ($row['bridge_score'] ?? 0.0);
-
-        // Get enemy sustain lift (from opposing sides)
-        foreach ($overRows as $over) {
-            if ((string) $over['battle_id'] === $battleId && (string) $over['side_key'] !== $sideKey) {
-                $sustainLifts[] = (float) ($over['sustain_lift_score'] ?? 0.0);
-            }
-        }
-    }
-
-    $anomalousBattleDenominator = max(1, count($anomalousBattles));
-    $controlBattleDenominator = max(1, count($controlBattles));
-    $anomalousRate = $anomalousBattleDenominator > 0 ? (float) $anomalyHits / (float) $anomalousBattleDenominator : 0.0;
-    $controlRate = $controlBattleDenominator > 0 ? (float) $controlHits / (float) $controlBattleDenominator : 0.0;
-    $presenceDelta = $anomalousRate - $controlRate;
-    $enemySustainLift = count($sustainLifts) > 0 ? array_sum($sustainLifts) / (float) count($sustainLifts) : 0.0;
-    $bridge = count($bridgeScores) > 0 ? array_sum($bridgeScores) / (float) count($bridgeScores) : 0.0;
-
-    // Org history metrics
-    $orgRow = db_select_one(
-        "SELECT corp_hops_180d, short_tenure_hops_180d
-         FROM character_org_history_cache
-         WHERE character_id = ? AND source = 'evewho'
-           AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP())
-         ORDER BY fetched_at DESC LIMIT 1",
-        [$characterId]
-    );
-    $corpHops = (int) ($orgRow['corp_hops_180d'] ?? 0);
-    $shortHops = (int) ($orgRow['short_tenure_hops_180d'] ?? 0);
-    $corpHopFrequency = $corpHops / 180.0;
-    $shortTenureRatio = $corpHops > 0 ? (float) $shortHops / (float) $corpHops : 0.0;
-
-    // Repeatability
-    $repeatability = min(1.0, (float) $anomalyHits / 3.0);
-
-    // 4. Compute review priority score (same formula as Python pipeline)
-    $reviewScore = max(0.0, min(1.0,
-        0.24 * $anomalousRate
-        + 0.1 * max(0.0, $presenceDelta)
-        + 0.26 * min(1.0, $enemySustainLift / 1.5)
-        + 0.2 * min(1.0, $bridge / 5.0)
-        + 0.1 * min(1.0, $corpHopFrequency * 10)
-        + 0.1 * $repeatability
-    ));
-
-    $confidenceScore = min(1.0, (float) ($anomalyHits + $controlHits) / 8.0);
-    $computedAt = gmdate('Y-m-d H:i:s');
-
-    // 5. Write features
     db_execute(
-        'INSERT INTO character_counterintel_features (
-            character_id, anomalous_battle_presence_count, control_battle_presence_count,
-            anomalous_battle_denominator, control_battle_denominator,
-            anomalous_presence_rate, control_presence_rate, enemy_same_hull_survival_lift,
-            enemy_sustain_lift, co_presence_anomalous_density, graph_bridge_score,
-            corp_hop_frequency_180d, short_tenure_ratio_180d, repeatability_score, computed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-            anomalous_battle_presence_count = VALUES(anomalous_battle_presence_count),
-            control_battle_presence_count = VALUES(control_battle_presence_count),
-            anomalous_battle_denominator = VALUES(anomalous_battle_denominator),
-            control_battle_denominator = VALUES(control_battle_denominator),
-            anomalous_presence_rate = VALUES(anomalous_presence_rate),
-            control_presence_rate = VALUES(control_presence_rate),
-            enemy_same_hull_survival_lift = VALUES(enemy_same_hull_survival_lift),
-            enemy_sustain_lift = VALUES(enemy_sustain_lift),
-            co_presence_anomalous_density = VALUES(co_presence_anomalous_density),
-            graph_bridge_score = VALUES(graph_bridge_score),
-            corp_hop_frequency_180d = VALUES(corp_hop_frequency_180d),
-            short_tenure_ratio_180d = VALUES(short_tenure_ratio_180d),
-            repeatability_score = VALUES(repeatability_score),
-            computed_at = VALUES(computed_at)',
+        'INSERT INTO worker_jobs (
+            job_key, queue_name, workload_class, execution_mode, priority, status, unique_key,
+            payload_json, available_at, max_attempts, timeout_seconds, retry_delay_seconds, memory_limit_mb
+         ) VALUES (
+            \'compute_counterintel_pipeline\', ?, ?, ?, \'high\', \'queued\', ?, ?,
+            UTC_TIMESTAMP(), ?, ?, ?, ?
+         )
+         ON DUPLICATE KEY UPDATE
+            payload_json = VALUES(payload_json),
+            priority = VALUES(priority),
+            available_at = CASE
+                WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN UTC_TIMESTAMP()
+                ELSE worker_jobs.available_at
+            END,
+            status = CASE
+                WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN \'queued\'
+                ELSE worker_jobs.status
+            END,
+            last_error = CASE
+                WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN NULL
+                ELSE worker_jobs.last_error
+            END,
+            attempts = CASE
+                WHEN worker_jobs.status IN (\'completed\', \'failed\', \'dead\') THEN 0
+                ELSE worker_jobs.attempts
+            END,
+            updated_at = CURRENT_TIMESTAMP',
         [
-            $characterId, $anomalyHits, $controlHits,
-            count($anomalousBattles), count($controlBattles),
-            $anomalousRate, $controlRate, $enemySustainLift,
-            $enemySustainLift, $anomalousRate, $bridge,
-            $corpHopFrequency, $shortTenureRatio, $repeatability, $computedAt,
+            (string) ($definition['queue_name'] ?? 'compute'),
+            (string) ($definition['workload_class'] ?? 'compute'),
+            strtolower((string) ($definition['execution_mode'] ?? 'python')) === 'php' ? 'php' : 'python',
+            $uniqueKey,
+            json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE),
+            // Single-character scoped runs are cheap — give them a shorter
+            // attempt ceiling than the batch defaults so retries don't
+            // linger on a broken character.
+            3,
+            // Shorter outer deadline than the scheduled batch: on-demand
+            // refresh should either complete quickly or fall back cleanly.
+            60,
+            30,
+            max(128, (int) ($definition['memory_limit_mb'] ?? 1024)),
         ]
     );
 
-    // 6. Write scores (percentile_rank set to 0; full cohort ranking requires full pipeline)
-    db_execute(
-        'INSERT INTO character_counterintel_scores (
-            character_id, review_priority_score, percentile_rank, confidence_score, evidence_count, computed_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE
-            review_priority_score = VALUES(review_priority_score),
-            percentile_rank = VALUES(percentile_rank),
-            confidence_score = VALUES(confidence_score),
-            evidence_count = VALUES(evidence_count),
-            computed_at = VALUES(computed_at)',
-        [$characterId, $reviewScore, 0.0, $confidenceScore, 8, $computedAt]
+    $jobRow = db_select_one(
+        "SELECT id, status
+           FROM worker_jobs
+          WHERE job_key = 'compute_counterintel_pipeline'
+            AND unique_key = ?
+          LIMIT 1",
+        [$uniqueKey]
     );
-
-    // 7. Write core evidence signals
-    $presencePayload = json_encode([
-        'anomalous' => ['numerator' => $anomalyHits, 'denominator' => count($anomalousBattles), 'rate' => $anomalousRate],
-        'control' => ['numerator' => $controlHits, 'denominator' => count($controlBattles), 'rate' => $controlRate],
-        'delta' => $presenceDelta,
-    ]);
-    $sustainPayload = json_encode([
-        'enemy_same_hull_survival_lift' => $enemySustainLift,
-        'sample_count' => count($sustainLifts),
-    ]);
-    $graphPayload = json_encode([
-        'co_presence_anomalous_density' => $anomalousRate,
-        'graph_bridge_score' => $bridge,
-    ]);
-    $orgPayload = json_encode([
-        'window_days' => 180,
-        'corp_hops' => $corpHops,
-        'short_tenure_hops' => $shortHops,
-        'corp_hop_frequency_per_day' => $corpHopFrequency,
-        'short_tenure_ratio' => $shortTenureRatio,
-    ]);
-    $repeatPayload = json_encode([
-        'anomalous_battle_count' => count($anomalousBattleIds),
-        'repeatability_score' => $repeatability,
-    ]);
-
-    $evidenceRows = [
-        ['anomalous_battle_presence_count', 'all_time', (float) $anomalyHits, "present in {$anomalyHits}/" . count($anomalousBattles) . " anomalous large battle-sides", $presencePayload],
-        ['anomalous_presence_rate', 'all_time', $anomalousRate, sprintf('anomalous presence rate %.3f vs control %.3f', $anomalousRate, $controlRate), $presencePayload],
-        ['presence_rate_delta', 'all_time', $presenceDelta, sprintf('presence delta %.3f', $presenceDelta), $presencePayload],
-        ['enemy_sustain_lift', 'all_time', $enemySustainLift, sprintf('enemy sustain lift %.3f when present', $enemySustainLift), $sustainPayload],
-        ['enemy_same_hull_survival_lift_detail', 'all_time', $enemySustainLift, sprintf('same-hull enemy survival lift %.3f across %d samples', $enemySustainLift, count($sustainLifts)), $sustainPayload],
-        ['graph_copresence_cluster_proximity', 'all_time', min(1.0, $bridge / 5.0), sprintf('graph bridge %.3f, anomalous co-presence density %.3f', $bridge, $anomalousRate), $graphPayload],
-        ['org_history_movement_180d', '180d', $corpHopFrequency, sprintf('org movement over 180d: %d hops, %d short-tenure, ratio %.3f', $corpHops, $shortHops, $shortTenureRatio), $orgPayload],
-        ['repeatability_across_battles_windows', 'all_time', $repeatability, sprintf('repeatability %.3f: %d anomalous battles', $repeatability, count($anomalousBattleIds)), $repeatPayload],
-    ];
-
-    foreach ($evidenceRows as [$evidenceKey, $windowLabel, $evidenceValue, $evidenceText, $payloadJson]) {
-        db_execute(
-            'INSERT INTO character_counterintel_evidence (
-                character_id, evidence_key, window_label, evidence_value, evidence_text, evidence_payload_json, computed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE
-                evidence_value = VALUES(evidence_value),
-                evidence_text = VALUES(evidence_text),
-                evidence_payload_json = VALUES(evidence_payload_json),
-                computed_at = VALUES(computed_at)',
-            [$characterId, $evidenceKey, $windowLabel, $evidenceValue, $evidenceText, $payloadJson, $computedAt]
-        );
-    }
-
-    // 8. Lane 2: compute behavioral signals from killmail activity (last 90 days)
-    $cutoff = gmdate('Y-m-d H:i:s', strtotime('-90 days'));
-    $killRows = db_select(
-        'SELECT ka.damage_done, ka.alliance_id,
-                ke.sequence_id, ke.killmail_time, ke.solar_system_id,
-                ke.victim_alliance_id,
-                COALESCE(br.participant_count, 0) AS participant_count
-         FROM killmail_attackers ka
-         INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-         LEFT JOIN battle_rollups br ON br.battle_id = ke.battle_id
-         WHERE ka.character_id = ?
-           AND ke.effective_killmail_at >= ?
-         ORDER BY ke.killmail_time',
-        [$characterId, $cutoff]
-    );
-
-    if ($killRows !== []) {
-        // Count attackers per kill for copresence/asymmetry signals.
-        $seqIds = array_unique(array_column($killRows, 'sequence_id'));
-        $seqPlaceholders = implode(',', array_fill(0, count($seqIds), '?'));
-        $attackerCounts = [];
-        if ($seqIds !== []) {
-            $acRows = db_select(
-                "SELECT sequence_id, COUNT(*) AS cnt FROM killmail_attackers WHERE sequence_id IN ({$seqPlaceholders}) GROUP BY sequence_id",
-                array_values($seqIds)
-            );
-            foreach ($acRows as $ac) {
-                $attackerCounts[(int) $ac['sequence_id']] = (int) $ac['cnt'];
-            }
-        }
-
-        $soloKills = $gangKills = $largeBattleKills = 0;
-        $systemCounts = [];
-        $timestamps = [];
-        $ownAlliances = [];
-        $crossSideKills = 0;
-
-        foreach ($killRows as $k) {
-            $pc = (int) $k['participant_count'];
-            if ($pc <= 4)       $soloKills++;
-            elseif ($pc <= 19)  $gangKills++;
-            else                $largeBattleKills++;
-            $sys = (int) ($k['solar_system_id'] ?? 0);
-            if ($sys > 0) $systemCounts[$sys] = ($systemCounts[$sys] ?? 0) + 1;
-            $t = strtotime((string) ($k['killmail_time'] ?? ''));
-            if ($t) $timestamps[] = $t;
-            $a = (int) ($k['alliance_id'] ?? 0);
-            if ($a > 0) $ownAlliances[$a] = true;
-        }
-        foreach ($killRows as $k) {
-            $va = (int) ($k['victim_alliance_id'] ?? 0);
-            $pc = (int) $k['participant_count'];
-            if ($pc < 20 && $va > 0 && isset($ownAlliances[$va])) $crossSideKills++;
-        }
-
-        $totalKills = count($killRows);
-        $smallKills = $soloKills + $gangKills;
-
-        // Fleet-absence ratio.
-        $largeBattleCount = (int) (db_select_one(
-            'SELECT COUNT(DISTINCT bp.battle_id) AS cnt FROM battle_participants bp
-             INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-             WHERE bp.character_id = ? AND br.participant_count >= 20 AND br.started_at >= ?',
-            [$characterId, $cutoff]
-        ) ?? [])['cnt'] ?? 0;
-        $fleetAbsenceRatio = ($smallKills + $largeBattleCount) > 0
-            ? $smallKills / ($smallKills + $largeBattleCount) : 0.0;
-
-        // Continuation rate.
-        sort($timestamps);
-        $contHits = $contEligible = 0;
-        for ($i = 0; $i < count($timestamps) - 1; $i++) {
-            $contEligible++;
-            for ($j = $i + 1; $j < min($i + 10, count($timestamps)); $j++) {
-                if (($timestamps[$j] - $timestamps[$i]) <= 1800) { $contHits++; break; }
-                if (($timestamps[$j] - $timestamps[$i]) > 1800) break;
-            }
-        }
-        $continuationRate = $contEligible > 0 ? $contHits / $contEligible : 0.0;
-
-        // Geographic Gini.
-        $sysValues = array_values($systemCounts);
-        sort($sysValues);
-        $n = count($sysValues); $total = array_sum($sysValues);
-        $geoGini = 0.0;
-        if ($n > 1 && $total > 0) {
-            $cum = 0.0; $area = 0.0;
-            foreach ($sysValues as $i => $v) {
-                $cum += $v; $area += $cum / $total - ($i + 1) / $n;
-            }
-            $geoGini = min(1.0, max(0.0, 2.0 * $area / $n * $n / ($n - 1)));
-        }
-
-        // Temporal burstiness.
-        $temporalReg = 0.0;
-        if (count($timestamps) >= 3) {
-            $intervals = [];
-            for ($i = 0; $i < count($timestamps) - 1; $i++) {
-                $d = $timestamps[$i + 1] - $timestamps[$i];
-                if ($d > 0) $intervals[] = (float) $d;
-            }
-            if (count($intervals) >= 2) {
-                $mu = array_sum($intervals) / count($intervals);
-                $sigma = sqrt(array_sum(array_map(fn($x) => ($x - $mu) ** 2, $intervals)) / count($intervals));
-                $b = ($sigma + $mu) > 0 ? ($sigma - $mu) / ($sigma + $mu) : 0.0;
-                $temporalReg = min(1.0, max(0.0, ($b + 1.0) / 2.0));
-            }
-        }
-
-        // Asymmetry preference (solo tier only).
-        $soloCounts = array_filter(array_map(
-            fn($k) => (int) $k['participant_count'] <= 4 ? ($attackerCounts[(int) $k['sequence_id']] ?? 1) : null,
-            $killRows
-        ));
-        $asymmetry = count($soloCounts) > 0
-            ? count(array_filter($soloCounts, fn($c) => $c >= 5)) / count($soloCounts) : 0.0;
-
-        // Cross-side rate.
-        $crossSideRate = $smallKills > 0 ? $crossSideKills / $smallKills : 0.0;
-
-        // Kill concentration.
-        $asymCounts = array_filter(array_column(
-            array_map(fn($k) => ['pc' => (int) $k['participant_count'], 'seq' => (int) $k['sequence_id']], $killRows),
-            'pc'
-        ), fn($pc) => $pc <= 4);
-        $killConc = $totalKills > 0 ? count(array_filter(
-            array_map(fn($k) => ($attackerCounts[(int) $k['sequence_id']] ?? 1), $killRows),
-            fn($c) => $c >= 5
-        )) / $totalKills : 0.0;
-
-        // Companion consistency (fraction of small kills with a co-attacker seen 2+ times).
-        $companionCounts = [];
-        foreach ($killRows as $k) {
-            if ((int) $k['participant_count'] >= 20) continue;
-            // We don't have per-kill attacker lists here; skip for on-demand.
-        }
-        $companionConsistency = 0.0; // Deferred to batch pipeline for full accuracy.
-
-        $behScore = max(0.0, min(1.0,
-            0.15 * $fleetAbsenceRatio
-            + 0.10 * (1.0 - $continuationRate)
-            + 0.10 * $killConc
-            + 0.10 * $geoGini
-            + 0.10 * $temporalReg
-            + 0.20 * $companionConsistency
-            + 0.15 * $crossSideRate
-            + 0.10 * $asymmetry
-        ));
-        $behConfidence = $totalKills >= 30 ? 'high' : ($totalKills >= 10 ? 'medium' : 'low');
-
-        db_execute(
-            'INSERT INTO character_behavioral_scores (
-                character_id, behavioral_risk_score, percentile_rank, confidence_tier,
-                total_kill_count, solo_kill_count, gang_kill_count, large_battle_count,
-                fleet_absence_ratio, post_engagement_continuation_rate,
-                kill_concentration_score, geographic_concentration_score,
-                temporal_regularity_score, companion_consistency_score,
-                cross_side_small_rate, asymmetry_preference, computed_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE
-                behavioral_risk_score = VALUES(behavioral_risk_score),
-                confidence_tier = VALUES(confidence_tier),
-                total_kill_count = VALUES(total_kill_count),
-                solo_kill_count = VALUES(solo_kill_count),
-                gang_kill_count = VALUES(gang_kill_count),
-                large_battle_count = VALUES(large_battle_count),
-                fleet_absence_ratio = VALUES(fleet_absence_ratio),
-                post_engagement_continuation_rate = VALUES(post_engagement_continuation_rate),
-                kill_concentration_score = VALUES(kill_concentration_score),
-                geographic_concentration_score = VALUES(geographic_concentration_score),
-                temporal_regularity_score = VALUES(temporal_regularity_score),
-                companion_consistency_score = VALUES(companion_consistency_score),
-                cross_side_small_rate = VALUES(cross_side_small_rate),
-                asymmetry_preference = VALUES(asymmetry_preference),
-                computed_at = VALUES(computed_at)',
-            [
-                $characterId, round($behScore, 6), 0.0, $behConfidence,
-                $totalKills, $soloKills, $gangKills, $largeBattleCount,
-                round($fleetAbsenceRatio, 6), round($continuationRate, 6),
-                round($killConc, 6), round($geoGini, 6),
-                round($temporalReg, 6), 0.0,
-                round($crossSideRate, 6), round($asymmetry, 6), $computedAt,
-            ]
-        );
-    }
 
     return [
         'ok' => true,
-        'message' => sprintf(
-            'Intelligence computed: %.2f priority score from %d battles (%d anomalous, %d control). Behavioral signals updated from %d kills.',
-            $reviewScore,
-            count($battleIds),
-            $anomalyHits,
-            $controlHits,
-            count($killRows ?? [])
-        ),
+        'status' => 'queued',
+        'job_id' => (int) ($jobRow['id'] ?? 0),
+        'worker_status' => (string) ($jobRow['status'] ?? 'queued'),
+        'message' => 'Queued for analysis — results in a few seconds. Refresh this page to see updated scores.',
     ];
 }
 
