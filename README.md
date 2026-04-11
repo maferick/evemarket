@@ -179,6 +179,8 @@ After import, runtime settings are read from `app_settings`; `local.php` is not 
 - SupplyCore’s AI briefing layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
 - The configured provider is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
 - The scheduler now self-registers missing schedule rows, so `rebuild_ai_briefings` starts running automatically on fresh installs and after upgrades without requiring a manual save in Settings.
+- Scheduler cadence is runtime-aware: `sync_schedules.effective_interval_seconds` is automatically recalculated from observed run duration and used for `next_due_at` advancement to avoid overlap churn on slow runs.
+- Every loop cycle emits a consolidated JSON line at `storage/logs/scheduler-report.jsonl` for lane-level run visibility.
 - Configure AI briefing connectivity in **Settings → AI Briefings** (`/settings?section=ai-briefings`):
   - `Enable AI doctrine briefings`
   - `AI Provider` (`Local Ollama` or `Runpod Serverless`)

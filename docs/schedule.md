@@ -236,7 +236,7 @@ If your job key starts with `compute_` and is a schedulable Python job, also add
 ],
 ```
 
-> **Note:** This is only required for `compute_*` Python jobs. Sync jobs (e.g., `my_new_sync`) do not need an entry here. An audit function (`scheduler_enabled_python_worker_binding_audit`) will flag missing entries for enabled compute jobs.
+> **Note:** The processor registry binding is required for every Python job that is expected to execute (compute and sync). Missing bindings are surfaced by startup audit warnings so one broken job does not halt the entire runner.
 
 ### Field reference
 
@@ -250,7 +250,7 @@ If your job key starts with `compute_` and is a schedulable Python job, also add
 
 ---
 
-## 6. Create the schedule migration
+## 6. Create the schedule migration (optional bootstrap)
 
 Create `database/migrations/YYYYMMDD_<job_key>_schedule.sql`:
 
@@ -260,7 +260,13 @@ VALUES ('my_new_sync', 0, 600, 'python')
 ON DUPLICATE KEY UPDATE enabled = enabled;
 ```
 
-Set `enabled` to `0` (disabled) for new jobs so they don't start running before operators are ready. The `ON DUPLICATE KEY UPDATE enabled = enabled` preserves existing state on re-run.
+When using the loop runner, schedule rows are now auto-created from `WORKER_JOB_DEFINITIONS` on startup.  
+Migration-driven inserts are therefore optional and mainly useful for explicit bootstrap control in managed environments.
+
+If you do insert rows via migration:
+- set `auto_managed = 1` for rows that the Python runner should reconcile automatically
+- set `auto_managed = 0` for rows intentionally operator-managed in Settings
+- preserve existing `enabled` values on re-run to avoid overriding operator choices
 
 If the job needs its own tables, create a separate migration for the schema.
 

@@ -391,7 +391,9 @@ CREATE TABLE IF NOT EXISTS sync_schedules (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     job_key VARCHAR(190) NOT NULL,
     enabled TINYINT(1) NOT NULL DEFAULT 1,
+    auto_managed TINYINT(1) NOT NULL DEFAULT 1,
     interval_seconds INT UNSIGNED NOT NULL,
+    effective_interval_seconds INT UNSIGNED NOT NULL DEFAULT 60,
     offset_seconds INT UNSIGNED NOT NULL DEFAULT 0,
     next_run_at DATETIME DEFAULT NULL,
     last_run_at DATETIME DEFAULT NULL,
@@ -459,6 +461,38 @@ SET @sync_schedules_offset_seconds_sql := IF(
 PREPARE sync_schedules_offset_seconds_stmt FROM @sync_schedules_offset_seconds_sql;
 EXECUTE sync_schedules_offset_seconds_stmt;
 DEALLOCATE PREPARE sync_schedules_offset_seconds_stmt;
+
+SET @sync_schedules_auto_managed_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'auto_managed'
+);
+SET @sync_schedules_auto_managed_sql := IF(
+    @sync_schedules_auto_managed_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN auto_managed TINYINT(1) NOT NULL DEFAULT 1 AFTER enabled',
+    'SELECT 1'
+);
+PREPARE sync_schedules_auto_managed_stmt FROM @sync_schedules_auto_managed_sql;
+EXECUTE sync_schedules_auto_managed_stmt;
+DEALLOCATE PREPARE sync_schedules_auto_managed_stmt;
+
+SET @sync_schedules_effective_interval_seconds_exists := (
+    SELECT COUNT(*)
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'sync_schedules'
+      AND COLUMN_NAME = 'effective_interval_seconds'
+);
+SET @sync_schedules_effective_interval_seconds_sql := IF(
+    @sync_schedules_effective_interval_seconds_exists = 0,
+    'ALTER TABLE sync_schedules ADD COLUMN effective_interval_seconds INT UNSIGNED NOT NULL DEFAULT 60 AFTER interval_seconds',
+    'SELECT 1'
+);
+PREPARE sync_schedules_effective_interval_seconds_stmt FROM @sync_schedules_effective_interval_seconds_sql;
+EXECUTE sync_schedules_effective_interval_seconds_stmt;
+DEALLOCATE PREPARE sync_schedules_effective_interval_seconds_stmt;
 
 SET @sync_schedules_interval_minutes_exists := (
     SELECT COUNT(*)

@@ -387,8 +387,8 @@ def audit_enabled_python_jobs(db: Any) -> dict[str, Any]:
         job_key = str(row.get("job_key") or "").strip()
         is_compute = job_key.startswith("compute_")
         has_processor = job_key in PYTHON_PROCESSOR_JOB_KEYS
-        if is_compute and not has_processor:
-            issues.append(f"Enabled Python compute job {job_key} is missing a Python worker processor binding.")
+        if not has_processor:
+            issues.append(f"Enabled Python job {job_key} is missing a Python worker processor binding.")
         matrix.append(
             {
                 "job_key": job_key,

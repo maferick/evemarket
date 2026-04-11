@@ -221,3 +221,32 @@ RETIRED_PHP_SYNC_PATHS: dict[str, str] = {
     "bin/precompute_buy_all.php": "Replaced by Python compute_auto_buyall worker processor.",
     "bin/sync_runner.php": "Retired legacy manual PHP sync multiplexer; queue-backed Python worker pool is authoritative.",
 }
+
+
+def _minimum_cooldown_seconds(job_key: str, definition: dict[str, Any]) -> int:
+    lane = str(definition.get("lane") or "").strip().lower()
+    workload = str(definition.get("workload_class") or "").strip().lower()
+    runtime = str(definition.get("runtime_class") or "").strip().lower()
+    key = job_key.lower()
+
+    # Heavy historical/backfill/member crawls should not churn.
+    if "historical" in key or "backfill" in key or "alliance_member" in key:
+        return 3600
+    if lane == "maintenance":
+        return 1800
+    if lane in {"compute-cip", "compute-behavioral"}:
+        return 600
+    if lane in {"compute-graph", "compute-battle"} or runtime in {"graph_heavy", "battle_heavy"}:
+        return 300
+    if lane in {"realtime", "ingestion"} or workload == "sync":
+        return 60
+    return 60
+
+
+def _apply_cooldown_floor() -> None:
+    for job_key, definition in WORKER_JOB_DEFINITIONS.items():
+        configured = int(definition.get("cooldown_seconds", 60))
+        definition["cooldown_seconds"] = max(configured, _minimum_cooldown_seconds(job_key, definition))
+
+
+_apply_cooldown_floor()
