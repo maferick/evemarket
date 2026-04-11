@@ -1217,6 +1217,21 @@ class SupplyCoreDb:
         ui_sections_json: str | None = None,
         section_versions_json: str | None = None,
     ) -> int:
+        # Include a UTC timestamp in event_key so each job finish creates a
+        # new row. Without this, the UNIQUE constraint on event_key (see
+        # ``uniq_ui_refresh_event_key`` in src/db.php) collapses every
+        # subsequent run of the same job into an UPDATE of the first row —
+        # and because the ON DUPLICATE KEY UPDATE clause below does not
+        # touch ``finished_at``, ``MAX(finished_at)`` (which drives the Log
+        # Viewer's "Live refresh · X ago" indicator and the
+        # ``db_ui_refresh_events_after`` SSE stream used for dashboard
+        # auto-refresh) would freeze the moment every job had run once
+        # under the Python loop-runner. The format matches
+        # ``supplycore_ui_refresh_publish_for_job_result`` in
+        # src/functions.php so both execution paths produce compatible
+        # rows. ``finished_at=VALUES(finished_at)`` is kept as belt-and-
+        # braces for the rare same-second collision case.
+        event_key = f"{job_key}:{job_status}:{time.strftime('%Y%m%d%H%M%S', time.gmtime())}"
         return self.insert(
             """INSERT INTO ui_refresh_events (
                     event_type, event_key, job_key, job_status, finished_at,
@@ -1227,9 +1242,11 @@ class SupplyCoreDb:
                 ON DUPLICATE KEY UPDATE
                     updated_at=CURRENT_TIMESTAMP,
                     id=LAST_INSERT_ID(id),
+                    finished_at=VALUES(finished_at),
+                    job_status=VALUES(job_status),
                     section_versions_json=COALESCE(VALUES(section_versions_json), section_versions_json)""",
             (
-                f"worker_pool:{job_key}"[:190],
+                event_key[:190],
                 job_key[:190],
                 job_status[:40],
                 domains_json,

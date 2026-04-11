@@ -29,6 +29,10 @@ SMART_SKIP_RESTART=0
 RESTART_SERVICES=()
 FAILED_SERVICES=()
 UNHEALTHY_SERVICES=()
+# Core units that were newly installed this run (dest file did not exist
+# before sync). These get enable --now'd after daemon-reload, because the
+# normal service discovery only sees units that are already loaded.
+NEW_CORE_UNITS=()
 
 # Timeout (seconds) to wait for a service to become active after restart.
 HEALTH_CHECK_TIMEOUT=30
@@ -294,6 +298,12 @@ sync_systemd_units() {
     if [[ -f "${dest}" ]] && cmp -s "${src}" "${dest}"; then
       continue  # already up to date
     fi
+    # Track fresh installs (dest previously absent) so we can enable them
+    # after daemon-reload. systemctl discover only sees loaded units, so a
+    # brand-new unit file would otherwise sit unused in /etc/systemd/system.
+    if [[ ! -f "${dest}" ]]; then
+      NEW_CORE_UNITS+=("${unit}")
+    fi
     log "Installing ${unit}"
     run_cmd cp "${src}" "${dest}"
     UNITS_CHANGED=1
@@ -342,6 +352,74 @@ sync_systemd_units() {
       | awk '{print $1}' \
       | grep -E "^${base_name}@" \
       || true)
+  done
+}
+
+# Enable and start newly-installed core units after daemon-reload.
+#
+# discover_services() only picks up units that systemd already knows about,
+# so a newly-copied unit file (e.g. supplycore-lane-compute-bg.service on
+# a host that never had it) would otherwise be copied but never started.
+# This function runs `systemctl enable --now` for each fresh install, with
+# guards for opt-in timers and the lanes-vs-monolithic runner conflict.
+enable_new_core_units() {
+  if [[ ${#NEW_CORE_UNITS[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  # Detect which runner mode the host is using so we don't start a service
+  # that conflicts with the active mode (lanes vs monolithic).
+  local lanes_active=false
+  for lane_svc in \
+      supplycore-lane-realtime.service \
+      supplycore-lane-ingestion.service \
+      supplycore-lane-compute.service \
+      supplycore-lane-compute-bg.service \
+      supplycore-lane-maintenance.service; do
+    if systemctl is-active --quiet "${lane_svc}" 2>/dev/null \
+        || systemctl is-enabled --quiet "${lane_svc}" 2>/dev/null; then
+      lanes_active=true
+      break
+    fi
+  done
+
+  local monolithic_active=false
+  if systemctl is-active --quiet supplycore-loop-runner.service 2>/dev/null \
+      || systemctl is-enabled --quiet supplycore-loop-runner.service 2>/dev/null; then
+    monolithic_active=true
+  fi
+
+  local unit
+  for unit in "${NEW_CORE_UNITS[@]}"; do
+    # Hourly-loop and claude-triage timers are opt-in per the CORE_UNITS
+    # comment above — sync the files but never auto-enable.
+    case "${unit}" in
+      supplycore-hourly-loop.service|supplycore-hourly-loop.timer| \
+      supplycore-claude-triage.service|supplycore-claude-triage.timer)
+        log "Skipping auto-enable of opt-in unit ${unit} (enable manually after review)"
+        continue
+        ;;
+    esac
+
+    # Lane vs monolithic conflict guards.
+    if [[ "${unit}" == supplycore-lane-*.service ]]; then
+      if [[ ${monolithic_active} == true && ${lanes_active} == false ]]; then
+        log "Skipping auto-enable of ${unit}: monolithic loop-runner is active (lanes mode not in use)"
+        continue
+      fi
+    fi
+    if [[ "${unit}" == "supplycore-loop-runner.service" ]]; then
+      if [[ ${lanes_active} == true ]]; then
+        log "Skipping auto-enable of ${unit}: lane services are active (monolithic mode not in use)"
+        continue
+      fi
+    fi
+
+    log "Enabling newly-installed unit ${unit}"
+    if ! run_cmd systemctl enable --now "${unit}"; then
+      log_warn "Failed to enable ${unit}"
+      FAILED_SERVICES+=("${unit}")
+    fi
   done
 }
 
@@ -647,6 +725,11 @@ if [[ ${SMART_SKIP_RESTART} -eq 0 ]]; then
 
   # ------- Service discovery and restart -------
   run_cmd systemctl daemon-reload
+
+  # Enable & start any core units that were freshly installed this run.
+  # Must happen after daemon-reload so systemd picks up the new unit files,
+  # and before discover_services so the new units become visible to it.
+  enable_new_core_units
 
   if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
     RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")
