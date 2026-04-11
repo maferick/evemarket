@@ -28,7 +28,6 @@ _mod = _load_module()
 _corridor_hash = _mod._corridor_hash
 _score_corridor = _mod._score_corridor
 _find_connected_corridors_neo4j = _mod._find_connected_corridors_neo4j
-_find_connected_corridors_sql = _mod._find_connected_corridors_sql
 
 
 class TestCorridorHash(unittest.TestCase):
@@ -145,26 +144,6 @@ class TestNeo4jCorridorDiscovery(unittest.TestCase):
 
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0], [100, 200, 300])
-
-
-class TestSqlCorridorFallback(unittest.TestCase):
-    def test_empty_set(self) -> None:
-        db = MagicMock()
-        result = _find_connected_corridors_sql(db, set())
-        self.assertEqual(result, [])
-
-    def test_returns_pairs(self) -> None:
-        db = MagicMock()
-        db.fetch_all.return_value = [
-            {"sys_a": 100, "sys_b": 200},
-            {"sys_a": 200, "sys_b": 300},
-        ]
-
-        result = _find_connected_corridors_sql(db, {100, 200, 300})
-
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0], [100, 200])
-        self.assertEqual(result[1], [200, 300])
 
 
 if __name__ == "__main__":
