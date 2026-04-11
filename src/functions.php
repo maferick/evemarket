@@ -26078,6 +26078,22 @@ function log_viewer_page_data(): array
             }
         }
 
+        // Compute last-run duration from cs.last_started_at / last_finished_at.
+        // If the job is still running (no finished_at), show elapsed time so far.
+        // If no start timestamp at all, null — template will render "-".
+        $lastDurationSeconds = null;
+        $lastStartedAt = $s['last_started_at'] ?? null;
+        $lastFinishedAt = $s['last_finished_at'] ?? null;
+        if ($lastStartedAt !== null) {
+            $startTs = strtotime((string) $lastStartedAt);
+            if ($startTs !== false) {
+                $endTs = $lastFinishedAt !== null ? strtotime((string) $lastFinishedAt) : time();
+                if ($endTs !== false && $endTs >= $startTs) {
+                    $lastDurationSeconds = $endTs - $startTs;
+                }
+            }
+        }
+
         $tierInfo = automation_runtime_job_tier($key);
         $jobs[] = [
             'job_key' => $key,
@@ -26087,6 +26103,7 @@ function log_viewer_page_data(): array
             'interval_seconds' => (int) $s['interval_seconds'],
             'last_run_at' => $s['last_run_at'],
             'last_run_relative' => supplycore_relative_datetime($s['last_run_at']),
+            'last_duration_seconds' => $lastDurationSeconds,
             'last_success_at' => $s['last_success_at'] ?? null,
             'last_success_relative' => supplycore_relative_datetime($s['last_success_at'] ?? null),
             'last_failure_at' => $s['last_failure_at'] ?? null,
@@ -26133,6 +26150,7 @@ function log_viewer_page_data(): array
             'interval_seconds' => ((int) ($regMeta['default_interval_minutes'] ?? 30)) * 60,
             'last_run_at' => null,
             'last_run_relative' => 'Never',
+            'last_duration_seconds' => null,
             'last_success_at' => null,
             'last_success_relative' => 'Never',
             'last_failure_at' => null,

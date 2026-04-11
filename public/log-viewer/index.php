@@ -304,6 +304,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                         <th class="text-left">Status</th>
                         <th class="text-left">Last run</th>
                         <th class="text-left">Last success</th>
+                        <th class="text-right" title="Duration of the most recent run (elapsed so far if still running)">Last duration</th>
                         <th class="text-left">Interval</th>
                         <th class="text-left">Pressure</th>
                         <th class="text-left">Issue</th>
@@ -311,7 +312,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                 </thead>
                 <tbody>
                     <?php if ($filteredJobs === []): ?>
-                        <tr><td colspan="7" class="py-8 text-center text-slate-400">No jobs match this filter.</td></tr>
+                        <tr><td colspan="8" class="py-8 text-center text-slate-400">No jobs match this filter.</td></tr>
                     <?php endif; ?>
                     <?php foreach ($jobsByTier as $tierNum => $tierJobs):
                         $tierLabel = $tierJobs[0]['tier_label'] ?? "Tier {$tierNum}";
@@ -321,7 +322,7 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                         $tierFailed = count(array_filter($tierJobs, fn ($j) => $j['health'] === 'failed' || $j['health'] === 'stuck'));
                     ?>
                         <tr class="bg-white/[0.03]">
-                            <td colspan="7" class="py-2.5 px-4">
+                            <td colspan="8" class="py-2.5 px-4">
                                 <div class="flex items-center gap-3">
                                     <span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-bold <?= $tierTone ?>">T<?= $tierNum ?></span>
                                     <span class="font-semibold text-white text-sm"><?= htmlspecialchars($tierLabel, ENT_QUOTES) ?></span>
@@ -345,6 +346,22 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
                             </td>
                             <td class="text-slate-300"><?= htmlspecialchars($job['last_run_relative'], ENT_QUOTES) ?></td>
                             <td class="text-slate-300"><?= htmlspecialchars($job['last_success_relative'], ENT_QUOTES) ?></td>
+                            <?php
+                                $lastDur = $job['last_duration_seconds'] ?? null;
+                                $interval = (int) $job['interval_seconds'];
+                                // Tone: amber if duration exceeds 80% of interval
+                                // (too slow for its schedule), rose if it exceeds
+                                // the interval entirely, slate otherwise.
+                                $durTone = 'text-slate-300';
+                                if ($lastDur !== null && $interval > 0) {
+                                    if ($lastDur >= $interval) {
+                                        $durTone = 'text-rose-300';
+                                    } elseif ($lastDur >= (int) ($interval * 0.8)) {
+                                        $durTone = 'text-amber-300';
+                                    }
+                                }
+                            ?>
+                            <td class="text-right tabular-nums <?= $durTone ?>"><?= $lastDur !== null ? htmlspecialchars(human_duration_seconds((float) $lastDur), ENT_QUOTES) : '<span class="text-slate-500">-</span>' ?></td>
                             <td class="text-slate-300"><?= $job['interval_seconds'] > 0 ? htmlspecialchars(human_duration_seconds((float) $job['interval_seconds']), ENT_QUOTES) : '-' ?></td>
                             <td>
                                 <?php
