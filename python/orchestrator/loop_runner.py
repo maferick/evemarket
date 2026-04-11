@@ -1089,6 +1089,29 @@ def main(argv: list[str] | None = None) -> int:
     })
 
     logger.info("loop runner stopped", payload={"event": "loop_runner.stopped", "worker_id": worker_id})
+
+    # When shutting down on a signal (SIGTERM/SIGINT) or a memory-abort
+    # request, the inner ThreadPoolExecutors used by run_tier() and
+    # _run_cycle_dependency_aware() were torn down with
+    # `pool.shutdown(wait=False, cancel_futures=True)` so the dispatcher
+    # could exit promptly without blocking on long-running jobs.  Their
+    # already-running worker threads, however, remain registered in
+    # concurrent.futures._threads_queues, and Python's atexit handler will
+    # join them before the interpreter actually exits.  For compute-bg jobs
+    # that routinely run for minutes (killmail backfills, CIP pipeline,
+    # horizon forecasts) that join easily exceeds systemd
+    # `TimeoutStopSec=90s`, which then trips
+    # `Failed with result 'timeout'` / SIGKILL on the lane services
+    # (#1001 lane-compute-bg, #1003 lane-compute).
+    #
+    # Force-exit instead so systemd records a clean stop.  All per-job DB
+    # state was finalised by `_finalize_job` before this point and the JSON
+    # log handlers flush line-by-line, so nothing material is lost.  The
+    # `--once` path returns normally because shutdown_event stays unset
+    # there.
+    if shutdown_event.is_set():
+        os._exit(0)
+
     return 0
 
 
