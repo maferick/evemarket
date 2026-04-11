@@ -12959,10 +12959,21 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
     // UPDATE, so there is never more than one row per identity. Scanning
     // killmail_events directly is safe and orders of magnitude faster than
     // wrapping it in a GROUP BY derived table (db_killmail_latest_sequences_sql).
+    //
+    // `recent_count` powers the "Recent Ingestion — Stored in the last N hours"
+    // card on the overview dashboard, so it must filter on the row-insertion
+    // timestamp (`created_at`), NOT `effective_killmail_at`. The latter is a
+    // generated column `COALESCE(killmail_time, created_at)` that resolves to
+    // the in-game kill time, so every backfill write (EveRef tarball imports,
+    // character_killmail_sync, killmail_history_backfill, ...) lands with an
+    // old `effective_killmail_at` and was invisible to this counter even
+    // though the row had just been stored. The end result was a permanent
+    // "Recent Ingestion: 0" display whenever the R2Z2 live stream happened
+    // to be quiet, despite the total count and sync freshness both moving.
     $summary = db_select_one(
         "SELECT
             COUNT(*) AS total_count,
-            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
+            SUM(CASE WHEN e.created_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
             MAX(e.sequence_id) AS max_sequence_id,
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
