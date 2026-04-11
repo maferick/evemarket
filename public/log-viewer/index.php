@@ -18,6 +18,7 @@ $failedRuns = $pageData['failed_runs'];
 $stuckRuns = $pageData['stuck_runs'];
 $neverRan = $pageData['never_ran'];
 $logFiles = $pageData['log_files'];
+$schedulerCycles = $pageData['scheduler_cycles'] ?? [];
 $kpi = $pageData['kpi'];
 $recentRuns = $pageData['recent_runs'];
 $backlog = $pageData['backlog'];
@@ -397,6 +398,122 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
     </div>
 </section>
 <!-- ui-section:log-viewer-jobs:end -->
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     Scheduler Cycle Report — parsed from storage/logs/scheduler-report.jsonl
+     ══════════════════════════════════════════════════════════════════════════ -->
+<?php if ($schedulerCycles !== []): ?>
+<section class="mt-8" data-ui-section="log-viewer-scheduler-cycles">
+    <h2 class="section-title mb-4">Scheduler Cycles</h2>
+    <p class="mb-3 text-xs text-slate-400">
+        Last <?= count($schedulerCycles) ?> cycles parsed from
+        <code class="text-slate-300">storage/logs/scheduler-report.jsonl</code> (one row per lane per cycle, newest first).
+    </p>
+    <div class="rounded-2xl border border-white/8 bg-white/[0.02] p-1">
+        <div class="table-shell overflow-x-auto">
+            <table class="table-ui w-full">
+                <thead>
+                    <tr>
+                        <th class="text-left">Lane</th>
+                        <th class="text-right">#</th>
+                        <th class="text-left">Started</th>
+                        <th class="text-right">Duration</th>
+                        <th class="text-right" title="ran / due / total">Ran/Due/Total</th>
+                        <th class="text-right">OK</th>
+                        <th class="text-right">Failed</th>
+                        <th class="text-right" title="due jobs whose deps weren't satisfied this cycle">Blocked</th>
+                        <th class="text-left">Slowest job</th>
+                        <th class="text-right">Memory</th>
+                        <th class="text-left">Failures</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($schedulerCycles as $sc):
+                        $rowTone = $sc['has_failures']
+                            ? 'bg-rose-500/5'
+                            : ($sc['jobs_ran'] > 0 ? '' : 'opacity-60');
+                        $startedTitle = $sc['started_at'] !== null
+                            ? $sc['started_at'] . ' (UTC)'
+                            : '';
+                        $finishedTitle = $sc['finished_at'] !== null
+                            ? 'finished ' . $sc['finished_at'] . ' (UTC)'
+                            : '';
+                        $memMb = $sc['memory_bytes'] > 0
+                            ? number_format($sc['memory_bytes'] / 1048576, 0) . ' MB'
+                            : '-';
+                    ?>
+                        <tr class="<?= $rowTone ?>">
+                            <td class="font-medium text-white">
+                                <?= htmlspecialchars($sc['lane'], ENT_QUOTES) ?>
+                            </td>
+                            <td class="text-right text-slate-400"><?= $sc['cycle'] ?></td>
+                            <td class="text-slate-300" title="<?= htmlspecialchars($startedTitle . ($finishedTitle !== '' ? ' — ' . $finishedTitle : ''), ENT_QUOTES) ?>">
+                                <?= htmlspecialchars(supplycore_relative_datetime($sc['started_at']), ENT_QUOTES) ?>
+                            </td>
+                            <td class="text-right text-slate-300">
+                                <?= htmlspecialchars(human_duration_seconds($sc['duration_seconds']), ENT_QUOTES) ?>
+                            </td>
+                            <td class="text-right text-slate-400">
+                                <?= $sc['jobs_ran'] ?> / <?= $sc['jobs_due'] ?> / <?= $sc['jobs_total'] ?>
+                            </td>
+                            <td class="text-right">
+                                <?php if ($sc['jobs_succeeded'] > 0): ?>
+                                    <span class="text-emerald-300"><?= $sc['jobs_succeeded'] ?></span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="text-right">
+                                <?php if ($sc['jobs_failed'] > 0): ?>
+                                    <span class="text-rose-300"><?= $sc['jobs_failed'] ?></span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="text-right">
+                                <?php if ($sc['jobs_blocked_by_deps'] > 0): ?>
+                                    <span class="text-amber-300"><?= $sc['jobs_blocked_by_deps'] ?></span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="max-w-xs truncate text-xs text-slate-300" title="<?= htmlspecialchars($sc['slowest_job'], ENT_QUOTES) ?>">
+                                <?php if ($sc['slowest_job'] !== ''): ?>
+                                    <?= htmlspecialchars($sc['slowest_job'], ENT_QUOTES) ?>
+                                    <span class="text-slate-500">(<?= htmlspecialchars(human_duration_seconds($sc['slowest_seconds']), ENT_QUOTES) ?>)</span>
+                                <?php else: ?>
+                                    <span class="text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="text-right text-xs text-slate-400"><?= $memMb ?></td>
+                            <td class="max-w-md">
+                                <?php if ($sc['failures'] !== []): ?>
+                                    <ul class="space-y-0.5">
+                                        <?php foreach (array_slice($sc['failures'], 0, 4) as $f):
+                                            $jobKey = (string) ($f['job_key'] ?? '?');
+                                            $err = (string) ($f['error'] ?? '');
+                                        ?>
+                                            <li class="truncate text-xs text-rose-200" title="<?= htmlspecialchars($jobKey . ': ' . $err, ENT_QUOTES) ?>">
+                                                <span class="font-medium"><?= htmlspecialchars($jobKey, ENT_QUOTES) ?>:</span>
+                                                <?= htmlspecialchars($err, ENT_QUOTES) ?>
+                                            </li>
+                                        <?php endforeach; ?>
+                                        <?php if (count($sc['failures']) > 4): ?>
+                                            <li class="text-xs text-rose-300">+<?= count($sc['failures']) - 4 ?> more</li>
+                                        <?php endif; ?>
+                                    </ul>
+                                <?php else: ?>
+                                    <span class="text-xs text-slate-500">-</span>
+                                <?php endif; ?>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+<?php endif; ?>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
      Log Files on Disk — collapsible, cleaner
