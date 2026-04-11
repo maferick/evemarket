@@ -474,11 +474,18 @@ def _run_cycle_dependency_aware(
                     )
                 break
 
-            # Wait for at least one future to complete.
-            done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED, timeout=60)
+            # Wait for at least one future to complete.  The timeout doubles
+            # as the mid-cycle memory-gate polling interval: when every
+            # in-flight job is long-running (e.g. compute-bg backfills that
+            # take minutes each) we still want to notice RSS creeping toward
+            # the systemd MemoryMax before the kernel OOM-kills us, so we
+            # loop back and re-check the gate on a short cadence instead of
+            # waiting up to a full minute for a job to finish (#1000).
+            done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED, timeout=5)
 
             if not done:
-                # Timeout on wait — just loop back to check shutdown_event.
+                # Timeout on wait — just loop back to check shutdown_event
+                # and the mid-cycle memory gate.
                 continue
 
             for fut in done:
