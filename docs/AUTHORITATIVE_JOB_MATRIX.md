@@ -62,6 +62,8 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | cache_expiry_cleanup_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Purge expired cache entries. |
 | log_to_issues | real_schedulable | yes | yes | no | yes | yes | yes |  | Scan failures and create/update GitHub issues. |
 | compute_bloom_entry_points | real_schedulable | yes | yes | yes | yes | yes | yes |  | Refresh Bloom smart entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance). |
+| compute_spy_feature_snapshots | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 2 — versioned per-character feature vectors for feature_set=spy_v1. |
+| build_spy_training_split | real_schedulable | yes | yes | no | yes | yes | yes |  | Spy detection Phase 2 — manual/low-cadence labeled split builder over analyst_feedback. |
 | killmail_r2z2_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed through zKill adapter boundary. |
 
 ## Internal/helper/non-schedulable entries

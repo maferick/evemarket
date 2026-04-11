@@ -3690,3 +3690,70 @@ CREATE TABLE IF NOT EXISTS graph_community_assignments (
     KEY idx_gca_community (community_id, pagerank_score DESC),
     KEY idx_gca_bridge (is_bridge, betweenness_centrality DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy Detection Platform — Phase 2: Feature & Label Foundation
+-- ---------------------------------------------------------------------------
+-- Versioned per-character feature snapshots and labeled training-split
+-- substrate. Input layer for the explainable spy-risk score (Phase 5) and
+-- the shadow ML lane (Phase 6). Reuses analyst_feedback for labels (see
+-- docs/SPY_LABEL_POLICY.md and python/orchestrator/jobs/spy_label_policy.py).
+-- Migration: database/migrations/20260411_spy_feature_label_foundation.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_feature_snapshots (
+    snapshot_id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    character_id        BIGINT UNSIGNED NOT NULL,
+    feature_set         VARCHAR(40)     NOT NULL,
+    feature_version     VARCHAR(40)     NOT NULL,
+    window_label        VARCHAR(20)     NOT NULL,
+    feature_vector_json LONGTEXT        NOT NULL,
+    feature_vector_hash CHAR(64)        NOT NULL,
+    source_run_id       VARCHAR(64)     NOT NULL,
+    computed_at         DATETIME        NOT NULL,
+    UNIQUE KEY uq_cfs (character_id, feature_set, feature_version, window_label, computed_at),
+    KEY idx_cfs_set_window (feature_set, feature_version, window_label, computed_at),
+    KEY idx_cfs_character (character_id, computed_at),
+    KEY idx_cfs_hash (feature_vector_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS feature_set_definitions (
+    feature_set     VARCHAR(40) NOT NULL,
+    feature_version VARCHAR(40) NOT NULL,
+    schema_json     LONGTEXT    NOT NULL,
+    created_at      DATETIME    NOT NULL,
+    status          ENUM('active','deprecated','draft') NOT NULL DEFAULT 'active',
+    PRIMARY KEY (feature_set, feature_version),
+    KEY idx_fsd_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS model_training_splits (
+    split_id             VARCHAR(64) NOT NULL PRIMARY KEY,
+    feature_set          VARCHAR(40) NOT NULL,
+    feature_version      VARCHAR(40) NOT NULL,
+    split_strategy       VARCHAR(40) NOT NULL,
+    train_window_start   DATETIME    NOT NULL,
+    train_window_end     DATETIME    NOT NULL,
+    test_window_start    DATETIME    NOT NULL,
+    test_window_end      DATETIME    NOT NULL,
+    positive_count       INT UNSIGNED NOT NULL DEFAULT 0,
+    negative_count       INT UNSIGNED NOT NULL DEFAULT 0,
+    seed                 INT UNSIGNED NOT NULL,
+    created_at           DATETIME    NOT NULL,
+    notes                TEXT        NULL,
+    KEY idx_mts_feature (feature_set, feature_version, created_at),
+    KEY idx_mts_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS model_training_split_members (
+    split_id         VARCHAR(64) NOT NULL,
+    character_id     BIGINT UNSIGNED NOT NULL,
+    split_role       ENUM('train','validation','test','holdout') NOT NULL,
+    label            ENUM('positive','negative','unknown') NOT NULL,
+    label_source     VARCHAR(40) NOT NULL,
+    label_confidence DECIMAL(5,3) NOT NULL DEFAULT 0.500,
+    PRIMARY KEY (split_id, character_id),
+    KEY idx_mtsm_role (split_id, split_role, label),
+    KEY idx_mtsm_character (character_id),
+    CONSTRAINT fk_mtsm_split FOREIGN KEY (split_id)
+        REFERENCES model_training_splits(split_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
