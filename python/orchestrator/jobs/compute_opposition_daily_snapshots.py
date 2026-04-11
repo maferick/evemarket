@@ -602,7 +602,7 @@ def _processor(db: SupplyCoreDb) -> dict[str, Any]:
             "ship_classes": ship.get("ship_classes", []),
             "ship_types": ship.get("ship_types", []),
             "posture": dos.get("posture"),
-            "engagement_rate": min(dos["engagement_rate"], 9999.9999) if dos.get("engagement_rate") is not None else None,
+            "engagement_rate": dos.get("engagement_rate"),
             "allies": rel.get("allies", []),
             "enemies": rel.get("hostiles", []),
             "theaters": theaters.get(aid, []),
