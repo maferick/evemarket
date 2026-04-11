@@ -21,6 +21,7 @@ single codebase.  Without ``--lane``, all jobs run (backward compatible).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import socket
@@ -231,24 +232,55 @@ def _tier_timeout_seconds(
     tier_jobs: list[str],
     definitions: dict[str, dict[str, Any]],
     groups: dict[str, list[str]],
+    max_parallel: int = 1,
 ) -> int:
     """Compute the maximum wall-clock time a tier should be allowed to run.
 
-    For concurrency groups (sequential execution) we sum their members'
-    timeouts.  The tier timeout is the max across all parallel units, plus a
-    generous buffer.
+    A tier is made up of "parallel units": each independent job is one
+    unit (its cost = its own timeout), and each concurrency group is one
+    unit whose members run sequentially under a single lock (cost = sum
+    of members' timeouts).
+
+    How those units map to wall-clock time depends on how many of them
+    can run at once, which is capped by the executor's ``max_parallel``:
+
+      * ``max_parallel >= len(units)`` — everything runs in parallel and
+        the budget is ``max(units)``.
+      * ``max_parallel <= 1``         — fully serialized, budget is
+        ``sum(units)``.
+      * otherwise — the longest unit pins the lower bound and the rest
+        of the work is distributed across the available slots.
+
+    Finally, a 2-minute buffer is added for thread startup, DB
+    connection overhead, etc.  Prior to this fix the formula assumed
+    unbounded parallelism (``max(units) + 120``), which silently
+    starved ``--max-parallel 1`` deployments where multiple heavy jobs
+    share a tier.
     """
-    independent_max = max(
-        (int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in tier_jobs if not any(jk in g for g in groups.values())),
-        default=300,
-    )
-    group_totals = [
+    independent_units = [
+        int(definitions.get(jk, {}).get("timeout_seconds", 300))
+        for jk in tier_jobs
+        if not any(jk in g for g in groups.values())
+    ]
+    group_units = [
         sum(int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in gj)
         for gj in groups.values()
     ]
-    longest = max([independent_max] + group_totals)
-    # Add 2-minute buffer for thread startup, DB connection overhead, etc.
-    return longest + 120
+    units = independent_units + group_units
+    if not units:
+        return 300 + 120
+
+    longest = max(units)
+    parallel = max(1, int(max_parallel))
+    if parallel <= 1:
+        budget = sum(units)
+    elif parallel >= len(units):
+        budget = longest
+    else:
+        remainder = sum(units) - longest
+        budget = longest + math.ceil(remainder / parallel)
+
+    return budget + 120
 
 
 def _append_scheduler_cycle_report(path: Path, payload: dict[str, Any]) -> None:
@@ -286,7 +318,7 @@ def run_tier(
         return []
 
     independent, groups = _split_tier_by_concurrency(tier_jobs, graph_nodes)
-    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups)
+    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups, max_parallel)
 
     logger.info(
         f"tier {tier_index}: {len(tier_jobs)} jobs "
@@ -792,7 +824,7 @@ def _run_loop(
 
                 for o in outcomes:
                     cycle_outcomes.append(o)
-                    tier_budget = max(1.0, _tier_timeout_seconds(tier_due, definitions, _split_tier_by_concurrency(tier_due, graph_nodes)[1]))
+                    tier_budget = max(1.0, _tier_timeout_seconds(tier_due, definitions, _split_tier_by_concurrency(tier_due, graph_nodes)[1], max_parallel))
                     o.hog_risk = o.duration_seconds > (tier_budget * 0.5)
                     if o.status == "failed":
                         total_failed += 1

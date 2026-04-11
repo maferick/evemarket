@@ -26218,6 +26218,16 @@ function log_viewer_page_data(): array
         usort($logFiles, fn (array $a, array $b) => ($b['size_bytes'] ?? 0) <=> ($a['size_bytes'] ?? 0));
     }
 
+    // ── Scheduler cycle report (from loop_runner JSONL) ───────────────
+    // The Python orchestrator appends one line per cycle per lane to
+    // scheduler-report.jsonl.  We parse the tail of that file so the
+    // log viewer can render formatted timestamps and per-cycle stats
+    // instead of the raw JSON appearing in the generic file tail.
+    $schedulerReportPath = $logDir !== '' ? $logDir . '/scheduler-report.jsonl' : '';
+    $schedulerCycles = $schedulerReportPath !== ''
+        ? log_viewer_scheduler_report_cycles($schedulerReportPath, 50)
+        : [];
+
     // ── Backlog depth ────────────────────────────────────────────────────
     // Two execution paths feed the backlog and they use different tables:
     //
@@ -26325,6 +26335,7 @@ function log_viewer_page_data(): array
         'stuck_runs' => $stuckRuns,
         'never_ran' => $neverRan,
         'log_files' => $logFiles,
+        'scheduler_cycles' => $schedulerCycles,
         'kpi' => [
             'total_enabled' => $totalEnabled,
             'total_failed' => $totalFailed,
@@ -26375,6 +26386,120 @@ function log_viewer_tail_file(string $path, int $lines = 5): array
     fclose($fp);
 
     return $buffer;
+}
+
+/**
+ * Parse the most recent cycles from the orchestrator's scheduler-report.jsonl
+ * file written by `python/orchestrator/loop_runner.py:_append_scheduler_cycle_report`.
+ *
+ * Each line in that file is a JSON object describing one scheduler cycle for
+ * one lane (cycle counter, lane, started_at/finished_at, jobs_total/due/ran/
+ * succeeded/failed, slowest_job, failures[], memory_bytes, all_jobs[]).
+ *
+ * Returns the most recent ``$maxCycles`` parsed entries (newest first), each
+ * with normalised numeric fields and a synthesised ``has_failures`` flag.
+ * Lines that fail to decode are silently skipped so the page never throws.
+ */
+function log_viewer_scheduler_report_cycles(string $path, int $maxCycles = 50): array
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return [];
+    }
+
+    // Read the tail of the file efficiently: seek to the end and walk
+    // backwards in 8 KiB chunks until we have enough lines or reach the
+    // start.  Avoids loading multi-megabyte JSONL files into memory.
+    $fp = fopen($path, 'rb');
+    if ($fp === false) {
+        return [];
+    }
+
+    $needLines = max(1, $maxCycles) * 2; // headroom for malformed lines
+    $chunkSize = 8192;
+    $buffer = '';
+    $lines = [];
+
+    fseek($fp, 0, SEEK_END);
+    $position = ftell($fp);
+    if ($position === false) {
+        fclose($fp);
+        return [];
+    }
+
+    while ($position > 0 && count($lines) < $needLines) {
+        $read = (int) min($chunkSize, $position);
+        $position -= $read;
+        fseek($fp, $position, SEEK_SET);
+        $chunk = (string) fread($fp, $read);
+        $buffer = $chunk . $buffer;
+
+        // Split off complete lines from the buffer; keep the leading
+        // partial fragment for the next iteration (it may be the tail
+        // end of an earlier line).
+        $parts = explode("\n", $buffer);
+        $buffer = array_shift($parts) ?? '';
+        foreach (array_reverse($parts) as $part) {
+            $part = rtrim($part, "\r");
+            if ($part !== '') {
+                $lines[] = $part;
+                if (count($lines) >= $needLines) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // If we walked all the way to the start, the leftover buffer is the
+    // very first line of the file.
+    if ($position === 0 && $buffer !== '' && count($lines) < $needLines) {
+        $first = rtrim($buffer, "\r");
+        if ($first !== '') {
+            $lines[] = $first;
+        }
+    }
+
+    fclose($fp);
+
+    // ``$lines`` is currently newest-first.  Decode and normalise.
+    $cycles = [];
+    foreach ($lines as $line) {
+        $decoded = json_decode($line, true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+        $failures = is_array($decoded['failures'] ?? null) ? $decoded['failures'] : [];
+        $cycles[] = [
+            'cycle' => (int) ($decoded['cycle'] ?? 0),
+            'lane' => (string) ($decoded['lane'] ?? 'unknown'),
+            'started_at' => isset($decoded['started_at']) ? (string) $decoded['started_at'] : null,
+            'finished_at' => isset($decoded['finished_at']) ? (string) $decoded['finished_at'] : null,
+            'duration_seconds' => (float) ($decoded['duration_seconds'] ?? 0),
+            'jobs_total' => (int) ($decoded['jobs_total'] ?? 0),
+            'jobs_due' => (int) ($decoded['jobs_due'] ?? 0),
+            'jobs_ran' => (int) ($decoded['jobs_ran'] ?? 0),
+            'jobs_succeeded' => (int) ($decoded['jobs_succeeded'] ?? 0),
+            'jobs_failed' => (int) ($decoded['jobs_failed'] ?? 0),
+            'jobs_skipped_not_due' => (int) ($decoded['jobs_skipped_not_due'] ?? 0),
+            'jobs_blocked_by_deps' => (int) ($decoded['jobs_blocked_by_deps'] ?? 0),
+            'slowest_job' => (string) ($decoded['slowest_job'] ?? ''),
+            'slowest_seconds' => (float) ($decoded['slowest_seconds'] ?? 0),
+            'failures' => $failures,
+            'memory_bytes' => (int) ($decoded['memory_bytes'] ?? 0),
+            'has_failures' => $failures !== [],
+        ];
+        if (count($cycles) >= $maxCycles) {
+            break;
+        }
+    }
+
+    // Sort by finished_at desc so multi-lane cycles interleave correctly.
+    usort($cycles, static function (array $a, array $b): int {
+        $aFinished = $a['finished_at'] !== null ? (int) strtotime($a['finished_at']) : 0;
+        $bFinished = $b['finished_at'] !== null ? (int) strtotime($b['finished_at']) : 0;
+        return $bFinished <=> $aFinished;
+    });
+
+    return array_slice($cycles, 0, $maxCycles);
 }
 
 function log_viewer_external_health(): array
