@@ -8,8 +8,14 @@ Results are materialized to ``map_system_intelligence`` and
 ``map_edge_intelligence`` tables in MariaDB.  The PHP map module reads these
 at request time — Neo4j is never queried in the rendering hot path.
 
-Strategy: try Neo4j GDS procedures first for high-performance analytics.
-If GDS is unavailable, fall back to Cypher queries or Python-side algorithms.
+Strategy: Neo4j is required (the universe graph is loaded exclusively from
+the ``System`` / ``CONNECTS_TO`` / ``JUMP_BRIDGE`` projection). When the
+Graph Data Science plugin is available we use its procedures for
+high-performance analytics; otherwise we fall back to pure Python
+algorithms (Brandes betweenness, Tarjan bridges, LPA communities) that
+operate on the already-loaded in-memory adjacency list. There is no SQL
+fallback path for graph topology — if Neo4j is disabled, the job is
+explicitly skipped with a reason so the scheduler surfaces it.
 """
 
 from __future__ import annotations
@@ -171,33 +177,9 @@ def _gds_louvain(client: Neo4jClient) -> dict[int, int]:
 
 
 # ---------------------------------------------------------------------------
-#  Fallback: Python-side analytics
+#  Graph loading + Python-side analytics (run on the in-memory adjacency
+#  list loaded from Neo4j; these are *not* SQL fallbacks).
 # ---------------------------------------------------------------------------
-
-def _load_graph_from_sql(db: SupplyCoreDb) -> tuple[list[int], dict[int, list[int]]]:
-    """Load the gate + jump bridge graph from SQL into adjacency lists."""
-    systems = db.fetch_all("SELECT system_id FROM ref_systems")
-    system_ids = [int(r["system_id"]) for r in systems]
-
-    adjacency: dict[int, list[int]] = defaultdict(list)
-
-    # Stargates
-    gates = db.fetch_all("SELECT system_id, dest_system_id FROM ref_stargates")
-    for g in gates:
-        a, b = int(g["system_id"]), int(g["dest_system_id"])
-        adjacency[a].append(b)
-
-    # Jump bridges
-    bridges = db.fetch_all(
-        "SELECT from_system_id, to_system_id FROM jump_bridges WHERE is_active = 1"
-    )
-    for jb in bridges:
-        a, b = int(jb["from_system_id"]), int(jb["to_system_id"])
-        adjacency[a].append(b)
-        adjacency[b].append(a)
-
-    return system_ids, dict(adjacency)
-
 
 def _load_graph_from_neo4j(client: Neo4jClient) -> tuple[list[int], dict[int, list[int]]]:
     """Load the gate + jump bridge graph from Neo4j."""
@@ -502,18 +484,24 @@ def run_compute_map_intelligence(
     now_sql = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
-    use_gds = False
-    client: Neo4jClient | None = None
+
+    # Neo4j is the source of truth for the universe graph. If it's disabled
+    # we skip the job explicitly rather than silently falling back to raw
+    # SQL scans of ref_systems/ref_stargates/jump_bridges (the old fallback
+    # path was expensive and diverged from the Neo4j projection anyway).
+    if not config.enabled:
+        return JobResult.skipped(
+            job_key=job_name,
+            reason="Neo4j is disabled; compute_map_intelligence requires the universe graph projection.",
+        ).to_dict()
+
+    client: Neo4jClient = Neo4jClient(config)
 
     # -- Load graph topology --------------------------------------------------
-    if config.enabled:
-        client = Neo4jClient(config)
-        system_ids, adjacency = _load_graph_from_neo4j(client)
-        use_gds = _has_gds(client)
-        if use_gds:
-            use_gds = _ensure_gds_projection(client)
-    else:
-        system_ids, adjacency = _load_graph_from_sql(db)
+    system_ids, adjacency = _load_graph_from_neo4j(client)
+    use_gds = _has_gds(client)
+    if use_gds:
+        use_gds = _ensure_gds_projection(client)
 
     if not system_ids:
         return JobResult.skipped(
@@ -523,13 +511,13 @@ def run_compute_map_intelligence(
     analytics_path = "gds" if use_gds else "fallback"
 
     # -- Compute betweenness centrality ----------------------------------------
-    if use_gds and client:
+    if use_gds:
         betweenness = _gds_betweenness(client)
     else:
         betweenness = _fallback_betweenness_sampled(adjacency, system_ids)
 
     # -- Compute degree centrality ---------------------------------------------
-    if use_gds and client:
+    if use_gds:
         degree = _gds_degree(client)
     else:
         degree = _fallback_degree(adjacency, system_ids)
@@ -538,7 +526,7 @@ def run_compute_map_intelligence(
     bridge_nodes, bridge_edges = _fallback_bridges(adjacency, system_ids)
 
     # -- Compute communities ---------------------------------------------------
-    if use_gds and client:
+    if use_gds:
         communities = _gds_louvain(client)
     else:
         communities = _fallback_communities_lpa(adjacency, system_ids)
@@ -631,7 +619,7 @@ def run_compute_map_intelligence(
             rows_written += len(chunk)
 
     # -- Clean up GDS projection -----------------------------------------------
-    if use_gds and client:
+    if use_gds:
         try:
             client.query(f"CALL gds.graph.drop('{GDS_GRAPH_NAME}', false)")
         except Exception:
