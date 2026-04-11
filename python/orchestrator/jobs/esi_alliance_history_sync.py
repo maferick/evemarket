@@ -23,6 +23,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..db import SupplyCoreDb
@@ -30,12 +31,16 @@ from ..esi_client import EsiClient
 from ..esi_rate_limiter import shared_limiter
 from ..job_result import JobResult
 
+logger = __import__("logging").getLogger("supplycore.esi_alliance_history_sync")
+
 ESI_USER_AGENT = "SupplyCore intelligence-pipeline/1.0 (alliance-history)"
 BATCH_SIZE = 500
 MAX_RETRIES_PER_CHARACTER = 2
 SKIP_IF_FETCHED_WITHIN_DAYS = 3
-# Max concurrent ESI fetches — HTTP only; DB writes remain sequential.
+# Max concurrent ESI fetches — HTTP only; DB writes are bulk/batched.
 MAX_FETCH_WORKERS = 10
+# Max concurrent corp→alliance ESI lookups during Phase 2.5 prefetch.
+MAX_CORP_PREFETCH_WORKERS = 10
 
 # Module-level EsiClient — shared across all calls within this job.
 _esi_client = EsiClient(user_agent=ESI_USER_AGENT, timeout_seconds=20, limiter=shared_limiter)
@@ -186,28 +191,170 @@ def _lookup_corp_alliance(corp_id: int, db: SupplyCoreDb) -> int | None:
     return alliance_id
 
 
-def _store_corporation_history(
+def _build_corp_history_rows(
     character_id: int,
     corp_history: list[dict[str, Any]],
-    db: SupplyCoreDb,
-) -> int:
-    """Persist raw ESI corporation history entries to character_corporation_history.
+) -> list[tuple[int, int, int, str, str | None]]:
+    """Return a list of (character_id, corp_id, record_id, started_at, ended_at)
+    tuples ready to be bulk-inserted into ``character_corporation_history``.
 
-    Returns the number of rows written.
+    Ended-at for a given entry is derived from the start_date of the next
+    entry (sorted by record_id ascending).  The most recent entry has
+    ``ended_at = None`` (still in that corp).
     """
     if not corp_history:
-        return 0
+        return []
 
     sorted_entries = sorted(corp_history, key=lambda e: int(e.get("record_id") or 0))
-    written = 0
+    rows: list[tuple[int, int, int, str, str | None]] = []
     for i, entry in enumerate(sorted_entries):
         corp_id = int(entry.get("corporation_id") or 0)
         record_id = int(entry.get("record_id") or 0)
         start_date = str(entry.get("start_date", ""))[:10]
-        end_date = None
+        end_date: str | None = None
         if i + 1 < len(sorted_entries):
             end_date = str(sorted_entries[i + 1].get("start_date", ""))[:10] or None
         if corp_id > 0 and record_id > 0 and start_date:
+            rows.append((character_id, corp_id, record_id, start_date, end_date))
+    return rows
+
+
+# ── Phase 1: bulk freshness filter ──────────────────────────────────────────
+
+def _bulk_freshness_filter(
+    db: SupplyCoreDb,
+    character_ids: list[int],
+) -> tuple[list[int], list[int]]:
+    """Split ``character_ids`` into (to_fetch, to_skip).
+
+    A character is skipped if there is existing data in
+    ``character_alliance_history`` for it AND either:
+
+    * it has no open alliance period (``ended_at IS NULL`` for none of its
+      rows — meaning we already have complete history), OR
+    * its most recent row was fetched within ``SKIP_IF_FETCHED_WITHIN_DAYS``.
+
+    Matches the per-character semantics of the pre-refactor code, but
+    uses a single aggregated query instead of 2N round-trips.
+    """
+    if not character_ids:
+        return [], []
+
+    placeholders = ",".join(["%s"] * len(character_ids))
+    rows = db.fetch_all(
+        f"""SELECT character_id,
+                   MAX(fetched_at) AS latest_fetched_at,
+                   SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END) AS open_periods
+            FROM character_alliance_history
+            WHERE character_id IN ({placeholders})
+            GROUP BY character_id""",
+        tuple(character_ids),
+    )
+
+    existing: dict[int, tuple[Any, bool]] = {}
+    for row in rows:
+        cid = int(row.get("character_id") or 0)
+        if cid <= 0:
+            continue
+        latest_fetched = row.get("latest_fetched_at")
+        has_open_period = int(row.get("open_periods") or 0) > 0
+        existing[cid] = (latest_fetched, has_open_period)
+
+    threshold = (datetime.utcnow() - timedelta(days=SKIP_IF_FETCHED_WITHIN_DAYS))
+
+    to_fetch: list[int] = []
+    to_skip: list[int] = []
+    for cid in character_ids:
+        ex = existing.get(cid)
+        if ex is None:
+            # No rows in character_alliance_history — always fetch.
+            to_fetch.append(cid)
+            continue
+        latest_fetched, has_open_period = ex
+        recently_fetched = False
+        if latest_fetched is not None:
+            try:
+                recently_fetched = latest_fetched >= threshold
+            except TypeError:
+                recently_fetched = False
+        if (not has_open_period) or recently_fetched:
+            to_skip.append(cid)
+        else:
+            to_fetch.append(cid)
+    return to_fetch, to_skip
+
+
+# ── Phase 2.5: bulk corp→alliance prefetch ──────────────────────────────────
+
+def _prefetch_uncached_corps(
+    db: SupplyCoreDb,
+    fetch_results: dict[int, list[dict[str, Any]] | None],
+) -> int:
+    """Resolve all corp→alliance mappings needed by ``fetch_results`` up-front.
+
+    Any corp not already in the in-memory ``_corp_alliance_cache`` is looked
+    up concurrently via ESI (through the gateway, which already coordinates
+    rate limits).  This removes per-character serial HTTP calls from the
+    otherwise-sequential DB write phase.
+
+    Returns the number of corps newly resolved.
+    """
+    distinct_corp_ids: set[int] = set()
+    for corp_history in fetch_results.values():
+        if not corp_history:
+            continue
+        for entry in corp_history:
+            cid = int(entry.get("corporation_id") or 0)
+            if cid > 0:
+                distinct_corp_ids.add(cid)
+
+    uncached = [cid for cid in distinct_corp_ids if cid not in _corp_alliance_cache]
+    if not uncached:
+        return 0
+
+    def _lookup(cid: int) -> tuple[int, int | None]:
+        return cid, _lookup_corp_alliance(cid, db)
+
+    resolved = 0
+    with ThreadPoolExecutor(max_workers=MAX_CORP_PREFETCH_WORKERS) as pool:
+        futures = {pool.submit(_lookup, cid): cid for cid in uncached}
+        for future in as_completed(futures):
+            try:
+                future.result()
+                resolved += 1
+            except Exception as exc:
+                cid = futures[future]
+                logger.warning("corp prefetch failed for %d: %s", cid, exc)
+                _corp_alliance_cache[cid] = None  # cache the failure
+    return resolved
+
+
+# ── Bulk writers ────────────────────────────────────────────────────────────
+
+def _bulk_write_corp_history(
+    db: SupplyCoreDb,
+    rows: list[tuple[int, int, int, str, str | None]],
+) -> int:
+    """Bulk-upsert character_corporation_history rows."""
+    if not rows:
+        return 0
+    try:
+        return db.execute_many(
+            """INSERT INTO character_corporation_history
+               (character_id, corporation_id, record_id, started_at, ended_at, fetched_at)
+               VALUES (%s, %s, %s, %s, %s, UTC_TIMESTAMP())
+               ON DUPLICATE KEY UPDATE
+                   ended_at = VALUES(ended_at),
+                   fetched_at = VALUES(fetched_at)""",
+            rows,
+        )
+    except Exception as exc:
+        logger.warning(
+            "bulk corp_history write failed (%d rows): %s — falling back to per-row",
+            len(rows), exc,
+        )
+        written = 0
+        for row in rows:
             try:
                 db.execute(
                     """INSERT INTO character_corporation_history
@@ -216,12 +363,112 @@ def _store_corporation_history(
                        ON DUPLICATE KEY UPDATE
                            ended_at = VALUES(ended_at),
                            fetched_at = VALUES(fetched_at)""",
-                    (character_id, corp_id, record_id, start_date, end_date),
+                    row,
                 )
                 written += 1
             except Exception:
-                pass  # Best-effort — don't fail the main job.
-    return written
+                pass  # Match original best-effort semantics.
+        return written
+
+
+def _bulk_write_alliance_periods(
+    db: SupplyCoreDb,
+    rows: list[tuple[int, int, str, str | None]],
+) -> int:
+    """Bulk-upsert character_alliance_history rows."""
+    if not rows:
+        return 0
+    try:
+        return db.execute_many(
+            """INSERT INTO character_alliance_history
+               (character_id, alliance_id, started_at, ended_at, fetched_at)
+               VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
+               ON DUPLICATE KEY UPDATE
+                   ended_at = VALUES(ended_at),
+                   fetched_at = VALUES(fetched_at)""",
+            rows,
+        )
+    except Exception as exc:
+        logger.warning(
+            "bulk alliance_history write failed (%d rows): %s — falling back to per-row",
+            len(rows), exc,
+        )
+        written = 0
+        for row in rows:
+            try:
+                db.execute(
+                    """INSERT INTO character_alliance_history
+                       (character_id, alliance_id, started_at, ended_at, fetched_at)
+                       VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
+                       ON DUPLICATE KEY UPDATE
+                           ended_at = VALUES(ended_at),
+                           fetched_at = VALUES(fetched_at)""",
+                    row,
+                )
+                written += 1
+            except Exception:
+                pass
+        return written
+
+
+def _bulk_mark_affiliation_history_done(
+    db: SupplyCoreDb,
+    character_ids: list[int],
+) -> None:
+    if not character_ids:
+        return
+    placeholders = ",".join(["%s"] * len(character_ids))
+    db.execute(
+        f"""UPDATE character_current_affiliation
+            SET needs_history_refresh = 0,
+                last_history_refresh_at = UTC_TIMESTAMP()
+            WHERE character_id IN ({placeholders})""",
+        tuple(character_ids),
+    )
+
+
+def _bulk_mark_queue_done(
+    db: SupplyCoreDb,
+    character_ids: list[int],
+) -> None:
+    if not character_ids:
+        return
+    placeholders = ",".join(["%s"] * len(character_ids))
+    db.execute(
+        f"""UPDATE esi_character_queue
+            SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP()
+            WHERE character_id IN ({placeholders})""",
+        tuple(character_ids),
+    )
+
+
+def _bulk_mark_queue_errors(
+    db: SupplyCoreDb,
+    errors: list[tuple[int, str]],
+) -> None:
+    """Update esi_character_queue for failed characters.
+
+    Uses execute_many so each row can carry its own error message.
+    """
+    if not errors:
+        return
+    try:
+        db.execute_many(
+            """UPDATE esi_character_queue
+               SET fetch_status = 'error', last_error = %s
+               WHERE character_id = %s""",
+            [(msg[:500], cid) for cid, msg in errors],
+        )
+    except Exception as exc:
+        logger.warning("bulk queue-error write failed: %s — falling back to per-row", exc)
+        for cid, msg in errors:
+            try:
+                db.execute(
+                    "UPDATE esi_character_queue SET fetch_status = 'error', last_error = %s WHERE character_id = %s",
+                    (msg[:500], cid),
+                )
+            except Exception:
+                pass
 
 
 def _derive_alliance_history(
@@ -317,46 +564,22 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] |
 
     _vlog(f"got {len(batch)} characters to process")
 
-    total_fetched = 0
-    total_written = 0
-    total_corp_history_written = 0
-    total_errors = 0
-    total_skipped = 0
-    total_changed = 0
-    total_unchanged = 0
+    batch_ids = [int(r["character_id"]) for r in batch]
 
-    # ── Phase 1: Filter out characters that don't need fetching ──────────
-    chars_to_fetch: list[int] = []
-    for row in batch:
-        character_id = int(row["character_id"])
-        try:
-            existing = db.fetch_all(
-                """SELECT fetched_at, ended_at FROM character_alliance_history
-                   WHERE character_id = %s
-                   ORDER BY started_at DESC""",
-                (character_id,),
-            )
-            if existing:
-                has_open_period = any(r.get("ended_at") is None for r in existing)
-                latest_fetch = existing[0].get("fetched_at")
-                recently_fetched = latest_fetch and db.fetch_scalar(
-                    "SELECT %s >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)",
-                    (latest_fetch, SKIP_IF_FETCHED_WITHIN_DAYS),
-                )
-                if not has_open_period or recently_fetched:
-                    db.execute(
-                        "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
-                        (character_id,),
-                    )
-                    total_skipped += 1
-                    continue
-            chars_to_fetch.append(character_id)
-        except Exception:
-            chars_to_fetch.append(character_id)
-
-    _vlog(f"after skip check: {len(chars_to_fetch)} to fetch, {total_skipped} skipped")
+    # ── Phase 1: Bulk freshness check ────────────────────────────────────
+    # Replaces 2N round-trips (SELECT + fetch_scalar per character) with a
+    # single aggregated SELECT and one bulk UPDATE for skipped IDs.
+    phase_started = time.perf_counter()
+    chars_to_fetch, skip_ids = _bulk_freshness_filter(db, batch_ids)
+    _bulk_mark_queue_done(db, skip_ids)
+    total_skipped = len(skip_ids)
+    _vlog(
+        f"phase 1 (freshness): {len(chars_to_fetch)} to fetch, {total_skipped} skipped "
+        f"in {int((time.perf_counter() - phase_started) * 1000)}ms"
+    )
 
     # ── Phase 2: Concurrent ESI fetch (HTTP only) ────────────────────────
+    phase_started = time.perf_counter()
     fetch_results: dict[int, list[dict[str, Any]] | None] = {}
 
     def _fetch_one(cid: int) -> tuple[int, list[dict[str, Any]] | None]:
@@ -373,74 +596,86 @@ def run_esi_alliance_history_sync(db: SupplyCoreDb, raw_config: dict[str, Any] |
                 fetch_results[cid] = None
                 _vlog(f"  char {cid}: fetch exception {type(exc).__name__}: {exc}")
 
-    _vlog(f"fetched {len(fetch_results)} characters from ESI")
+    _vlog(
+        f"phase 2 (ESI fetch): fetched {len(fetch_results)} characters "
+        f"in {int((time.perf_counter() - phase_started) * 1000)}ms"
+    )
 
-    # ── Phase 3: Sequential DB processing ────────────────────────────────
-    for idx, character_id in enumerate(chars_to_fetch):
+    # ── Phase 2.5: Parallel corp→alliance prefetch for uncached corps ────
+    # Scans all fetched corp histories, finds any corp IDs not already in the
+    # in-memory cache (which was warmed from entity_metadata_cache at job
+    # start) and resolves them concurrently so Phase 3 stays pure-CPU+DB.
+    phase_started = time.perf_counter()
+    corp_prefetched = _prefetch_uncached_corps(db, fetch_results)
+    _vlog(
+        f"phase 2.5 (corp prefetch): resolved {corp_prefetched} uncached corps "
+        f"in {int((time.perf_counter() - phase_started) * 1000)}ms"
+    )
+
+    # ── Phase 3: In-memory accumulation + bulk DB writes ─────────────────
+    # No per-character DB round-trips.  All inserts/updates go out as a
+    # small handful of bulk statements at the end.
+    phase_started = time.perf_counter()
+    corp_history_rows: list[tuple[int, int, int, str, str | None]] = []
+    alliance_period_rows: list[tuple[int, int, str, str | None]] = []
+    success_ids: list[int] = []
+    error_rows: list[tuple[int, str]] = []
+    total_changed = 0
+    total_unchanged = 0
+
+    for character_id in chars_to_fetch:
         corp_history = fetch_results.get(character_id)
-        char_started = time.perf_counter()
-
+        if corp_history is None:
+            error_rows.append((character_id, "ESI unavailable or rate limited"))
+            continue
         try:
-            if corp_history is None:
-                db.execute(
-                    "UPDATE esi_character_queue SET fetch_status = 'error', last_error = 'ESI unavailable or rate limited' WHERE character_id = %s",
-                    (character_id,),
-                )
-                total_errors += 1
-                _vlog(f"  [{idx + 1}/{len(chars_to_fetch)}] char {character_id}: ESI error")
-                continue
-
-            total_fetched += 1
-
-            # Store raw corporation history entries.
-            corp_rows = _store_corporation_history(character_id, corp_history, db)
-            total_corp_history_written += corp_rows
-
-            # Derive alliance membership periods.
+            corp_history_rows.extend(
+                _build_corp_history_rows(character_id, corp_history)
+            )
             periods = _derive_alliance_history(character_id, corp_history, db)
-
             if periods:
-                for char_id, alliance_id, started_at, ended_at in periods:
-                    db.execute(
-                        """INSERT INTO character_alliance_history
-                           (character_id, alliance_id, started_at, ended_at, fetched_at)
-                           VALUES (%s, %s, %s, %s, UTC_TIMESTAMP())
-                           ON DUPLICATE KEY UPDATE
-                               ended_at = VALUES(ended_at),
-                               fetched_at = VALUES(fetched_at)""",
-                        (char_id, alliance_id, started_at, ended_at),
-                    )
-                    total_written += 1
+                alliance_period_rows.extend(periods)
                 total_changed += 1
             else:
                 total_unchanged += 1
-
-            # Mark history refresh as done on affiliation table.
-            db.execute(
-                """UPDATE character_current_affiliation
-                   SET needs_history_refresh = 0, last_history_refresh_at = UTC_TIMESTAMP()
-                   WHERE character_id = %s""",
-                (character_id,),
-            )
-
-            db.execute(
-                "UPDATE esi_character_queue SET fetch_status = 'done', fetched_at = UTC_TIMESTAMP() WHERE character_id = %s",
-                (character_id,),
-            )
-            char_ms = int((time.perf_counter() - char_started) * 1000)
-            _vlog(f"  [{idx + 1}/{len(chars_to_fetch)}] char {character_id}: done — {len(periods)} alliance periods, {corp_rows} corp rows, {char_ms}ms")
-
+            success_ids.append(character_id)
         except Exception as exc:
-            total_errors += 1
-            db.execute(
-                "UPDATE esi_character_queue SET fetch_status = 'error', last_error = %s WHERE character_id = %s",
-                (f"{type(exc).__name__}: {exc}"[:500], character_id),
+            error_rows.append(
+                (character_id, f"{type(exc).__name__}: {exc}")
             )
-            _vlog(f"  [{idx + 1}/{len(chars_to_fetch)}] char {character_id}: EXCEPTION {type(exc).__name__}: {exc}")
             if verbose:
                 traceback.print_exc(file=sys.stderr)
 
-    _vlog(f"DONE — {total_fetched} fetched, {total_written} alliance periods, {total_corp_history_written} corp rows, {total_errors} errors, {total_skipped} skipped, cache={len(_corp_alliance_cache)} corps")
+    _vlog(
+        f"phase 3 accumulate: {len(corp_history_rows)} corp rows, "
+        f"{len(alliance_period_rows)} alliance periods, "
+        f"{len(success_ids)} ok, {len(error_rows)} errored "
+        f"in {int((time.perf_counter() - phase_started) * 1000)}ms"
+    )
+
+    # Bulk writes.  Each of these is ONE DB round-trip per table
+    # (execute_many batches into a single prepared statement call).
+    phase_started = time.perf_counter()
+    total_corp_history_written = _bulk_write_corp_history(db, corp_history_rows)
+    total_written = _bulk_write_alliance_periods(db, alliance_period_rows)
+    _bulk_mark_affiliation_history_done(db, success_ids)
+    _bulk_mark_queue_done(db, success_ids)
+    _bulk_mark_queue_errors(db, error_rows)
+    _vlog(
+        f"phase 3 bulk write: corp_history={total_corp_history_written}, "
+        f"alliance_periods={total_written}, success={len(success_ids)}, "
+        f"errors={len(error_rows)} "
+        f"in {int((time.perf_counter() - phase_started) * 1000)}ms"
+    )
+
+    total_fetched = len(success_ids)
+    total_errors = len(error_rows)
+
+    _vlog(
+        f"DONE — {total_fetched} fetched, {total_written} alliance periods, "
+        f"{total_corp_history_written} corp rows, {total_errors} errors, "
+        f"{total_skipped} skipped, cache={len(_corp_alliance_cache)} corps"
+    )
 
     return JobResult.success(
         job_key="esi_alliance_history_sync",
