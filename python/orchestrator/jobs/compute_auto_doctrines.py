@@ -177,35 +177,106 @@ def _extract_our_losses(db: Any, window_days: int) -> dict[int, dict]:
     # of the modern 1283 Expedition Frigate).
     excluded_groups_sql = ",".join(str(g) for g in sorted(_EXCLUDED_HULL_GROUPS))
     excluded_type_ids_sql = ",".join(str(t) for t in sorted(_EXCLUDED_HULL_TYPE_IDS))
-    sql = f"""
-        SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id,
-               ki.item_type_id, ki.item_flag
-        FROM killmail_events ke
-        INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
-        INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
-        INNER JOIN ref_item_types hull ON hull.type_id = ke.victim_ship_type_id
-        WHERE ke.mail_type = 'loss'
-          AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
-          AND (ki.item_flag BETWEEN 11 AND 34
-               OR ki.item_flag BETWEEN 92 AND 94
-               OR ki.item_flag BETWEEN 125 AND 132)
-          AND rit.category_id IN (7, 32)
-          AND hull.group_id NOT IN ({excluded_groups_sql})
-          AND hull.type_id  NOT IN ({excluded_type_ids_sql})
-        ORDER BY ke.sequence_id
-    """
+
     # Use _fit_clustering.flag_category via local import to avoid a
     # circular on module load.
     from ._fit_clustering import flag_category
 
+    # Two-pass extraction instead of a single streaming join.
+    #
+    # The previous implementation streamed a 4-way join over the full
+    # 30-day killmail_items corpus through `iterate_batches` without
+    # `restart_on_conn_drop=True`.  MariaDB's `wait_timeout` (or the server
+    # being bounced) would tear down the SS cursor mid-stream and pymysql
+    # raised `(2013, 'Lost connection to MySQL server during query
+    # (timed out)')` — see auto-log issue #1014.
+    #
+    # Cursor-paginated `fetch_all` calls are each a fresh short-lived
+    # connection that benefits from the `_SIMPLE_MAX_RETRIES=3` retry
+    # loop built into `fetch_all` for connection-loss errors, and each
+    # page returns in milliseconds because the index on
+    # `killmail_items.sequence_id` makes the `IN (…)` lookup cheap.
+    #
+    # Pass 1: pull the candidate loss sequence_ids in pages.  The query
+    # is ordered by sequence_id ASC so pagination by `sequence_id >
+    # last_seq` gives exactly-once coverage even across retries.
+    seq_page_size = 2000
+    last_seq = 0
+    candidate_seq_ids: list[tuple[int, int, int]] = []  # (seq_id, hull_type_id, alliance_id)
+    while True:
+        seq_rows = db.fetch_all(
+            f"""
+            SELECT ke.sequence_id, ke.victim_ship_type_id, ke.victim_alliance_id
+            FROM killmail_events ke
+            INNER JOIN ref_item_types hull ON hull.type_id = ke.victim_ship_type_id
+            WHERE ke.mail_type = 'loss'
+              AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
+              AND ke.sequence_id > %s
+              AND hull.group_id NOT IN ({excluded_groups_sql})
+              AND hull.type_id  NOT IN ({excluded_type_ids_sql})
+            ORDER BY ke.sequence_id ASC
+            LIMIT %s
+            """,
+            (window_days, last_seq, seq_page_size),
+        )
+        if not seq_rows:
+            break
+        for row in seq_rows:
+            seq_id = int(row["sequence_id"])
+            candidate_seq_ids.append((
+                seq_id,
+                int(row["victim_ship_type_id"] or 0),
+                int(row["victim_alliance_id"] or 0),
+            ))
+            if seq_id > last_seq:
+                last_seq = seq_id
+        if len(seq_rows) < seq_page_size:
+            break
+
+    # Pass 2: fetch items for each page of sequence_ids.  The `IN (…)`
+    # filter hits `killmail_items.sequence_id` directly, so each page is
+    # a short index-driven query.  `fetch_all` retries on transient
+    # connection loss (2013/2006/2003) so a wait_timeout fire in the
+    # middle of the window only costs us the current page.
     kills: dict[int, dict] = {}
-    for batch in db.iterate_batches(sql, (window_days,), batch_size=5000):
-        for row in batch:
+    items_page_size = 500
+    for offset in range(0, len(candidate_seq_ids), items_page_size):
+        page = candidate_seq_ids[offset:offset + items_page_size]
+        if not page:
+            continue
+        seq_ids_only = [s for s, _h, _a in page]
+        placeholders = ",".join(["%s"] * len(seq_ids_only))
+        item_rows = db.fetch_all(
+            f"""
+            SELECT ki.sequence_id, ki.item_type_id, ki.item_flag
+            FROM killmail_items ki
+            INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
+            WHERE ki.sequence_id IN ({placeholders})
+              AND (ki.item_flag BETWEEN 11 AND 34
+                   OR ki.item_flag BETWEEN 92 AND 94
+                   OR ki.item_flag BETWEEN 125 AND 132)
+              AND rit.category_id IN (7, 32)
+            """,
+            tuple(seq_ids_only),
+        )
+        # Seed the kills dict so even losses with zero fitted modules still
+        # show up for the clustering pass — mirrors the original
+        # behaviour where a seq_id without any matching items was silently
+        # absent.  We only add seq_ids that actually produced an item row.
+        for row in item_rows:
             seq_id = int(row["sequence_id"])
             if seq_id not in kills:
+                # Look up hull / alliance from the pass-1 tuple.
+                hull_type_id = 0
+                alliance_id = 0
+                for s, h, a in page:
+                    if s == seq_id:
+                        hull_type_id = h
+                        alliance_id = a
+                        break
                 kills[seq_id] = {
-                    "hull_type_id": int(row["victim_ship_type_id"] or 0),
-                    "alliance_id": int(row["victim_alliance_id"] or 0),
+                    "hull_type_id": hull_type_id,
+                    "alliance_id": alliance_id,
                     "modules": [],
                 }
             kills[seq_id]["modules"].append(
