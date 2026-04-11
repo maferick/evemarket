@@ -1113,10 +1113,34 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
 
             _BATCH_CHUNK = 500
 
-            def _write_anomalies(_conn, cursor):
+            # Split the rewrite into many small transactions instead of one
+            # giant one.  The old single-transaction pattern held row locks
+            # on `battle_anomalies` and `battle_side_metrics` for the full
+            # duration of the rewrite (tens of seconds with 40k+ battles),
+            # which any concurrent reader (PHP dashboards, compute_suspicion
+            # _scores, compute_battle_actor_features) would trip on and
+            # surface as `(1205, 'Lock wait timeout exceeded')` — see
+            # auto-log issue #977.  Each per-chunk transaction is bounded
+            # to ~100ms of lock hold and benefits from `run_in_transaction`'s
+            # 3× retry on 1205/2013/2006.
+            #
+            # Wiping both tables first is also split into its own
+            # transaction: the DELETE commits immediately so new INSERT
+            # chunks never wait on the wipe's locks.  There is a brief
+            # window (<1s) where dashboards see empty tables, which is
+            # acceptable for a job that runs every 10 minutes — the old
+            # behaviour showed stale data for ~30s during the rewrite
+            # anyway, because readers were blocked on the lock.
+            def _wipe_tables(_conn, cursor) -> None:
                 cursor.execute("DELETE FROM battle_anomalies")
                 cursor.execute("DELETE FROM battle_side_metrics")
-                for offset in range(0, len(metrics_batch), _BATCH_CHUNK):
+
+            db.run_in_transaction(_wipe_tables)
+
+            for offset in range(0, len(metrics_batch), _BATCH_CHUNK):
+                chunk = metrics_batch[offset:offset + _BATCH_CHUNK]
+
+                def _write_metrics_chunk(_conn, cursor, chunk=chunk) -> None:
                     cursor.executemany(
                         """
                         INSERT INTO battle_side_metrics (
@@ -1125,20 +1149,25 @@ def run_compute_battle_anomalies(db: SupplyCoreDb, runtime: dict[str, Any] | Non
                             switch_pressure, efficiency_score, z_efficiency_score, computed_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
-                        metrics_batch[offset:offset + _BATCH_CHUNK],
+                        chunk,
                     )
-                for offset in range(0, len(anomalies_batch), _BATCH_CHUNK):
+
+                db.run_in_transaction(_write_metrics_chunk)
+
+            for offset in range(0, len(anomalies_batch), _BATCH_CHUNK):
+                chunk = anomalies_batch[offset:offset + _BATCH_CHUNK]
+
+                def _write_anomalies_chunk(_conn, cursor, chunk=chunk) -> None:
                     cursor.executemany(
                         """
                         INSERT INTO battle_anomalies (
                             battle_id, side_key, anomaly_class, z_efficiency_score, percentile_rank, explanation_json, computed_at
                         ) VALUES (%s, %s, %s, %s, %s, %s, %s)
                         """,
-                        anomalies_batch[offset:offset + _BATCH_CHUNK],
+                        chunk,
                     )
 
-            # run_in_transaction auto-retries on deadlock (1213) and lock-wait timeout (1205).
-            db.run_in_transaction(_write_anomalies)
+                db.run_in_transaction(_write_anomalies_chunk)
         rows_written = len(shaped) * 2
 
         finish_job_run(
@@ -1267,6 +1296,34 @@ def run_compute_battle_actor_features(
     *,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    # Serialize concurrent runs via a compute_job_locks lease.  Same rationale
+    # as compute_battle_anomalies (#1016): the old single-transaction full
+    # wipe + INSERT…SELECT could collide with its own retry or with a manual
+    # CLI run and surface as `(1205, 'Lock wait timeout exceeded')` (see
+    # auto-log issues #968 and #978) or `InterfaceError(0, '')` when the DB
+    # connection got torn down mid-query (#966, #976).  The TTL is a little
+    # over 2× the worker-pool timeout_seconds so a crashed worker cannot
+    # permanently block future runs.
+    _ACTOR_LOCK_KEY = "compute_battle_actor_features"
+    _ACTOR_LOCK_TTL_SECONDS = 900
+    lock_owner = acquire_job_lock(db, _ACTOR_LOCK_KEY, ttl_seconds=_ACTOR_LOCK_TTL_SECONDS)
+    if lock_owner is None:
+        _battle_log(
+            runtime,
+            "battle_intelligence.job.skipped",
+            {
+                "job_name": "compute_battle_actor_features",
+                "reason": "another instance already holds the compute_job_locks lease",
+                "lock_key": _ACTOR_LOCK_KEY,
+                "dry_run": dry_run,
+            },
+        )
+        return JobResult.skipped(
+            job_key="compute_battle_actor_features",
+            reason="Another run already holds the compute_job_locks lease for compute_battle_actor_features.",
+            meta={"lock_key": _ACTOR_LOCK_KEY},
+        ).to_dict()
+
     job = start_job_run(db, "compute_battle_actor_features")
     started_monotonic = datetime.now(UTC)
     rows_processed = 0
@@ -1278,59 +1335,111 @@ def run_compute_battle_actor_features(
         enrichment_priorities: dict[int, float] = {}
 
         if not dry_run:
-            # Single INSERT...SELECT with window functions computes centrality
-            # and visibility server-side, eliminating the max_participation
-            # pre-load and per-row Python computation.
-            with db.transaction() as (_, cursor):
-                cursor.execute("DELETE FROM battle_actor_features")
-                rows_written = cursor.execute(
-                    """
-                    INSERT INTO battle_actor_features (
-                        battle_id, character_id, side_key, participation_count,
-                        centrality_score, visibility_score,
-                        is_logi, is_command, is_capital,
-                        participated_in_high_sustain, participated_in_low_sustain,
-                        computed_at
-                    )
-                    SELECT
-                        bp.battle_id,
-                        bp.character_id,
-                        bp.side_key,
-                        bp.participation_count,
-                        bp.participation_count / GREATEST(
-                            MAX(bp.participation_count) OVER (PARTITION BY bp.battle_id), 1
-                        ) AS centrality_score,
-                        LEAST(1.0,
+            # Batch the rewrite by battle_id so each transaction is small.
+            # The old single-transaction `DELETE FROM battle_actor_features;
+            # INSERT … SELECT …` pattern held row locks for the entire
+            # rewrite (typically hundreds of thousands of rows, tens of
+            # seconds on the compute lane) and could be killed mid-query
+            # by MariaDB's `wait_timeout`, surfacing as
+            # `InterfaceError(0, '')` (see #966, #976).  Chunking by
+            # battle_id keeps each transaction under ~100ms and fits inside
+            # the default connection lifetime.  The window function
+            # `MAX(...) OVER (PARTITION BY bp.battle_id)` only looks at a
+            # single battle_id at a time, so chunking is safe — the
+            # centrality denominator is identical whether we scan one battle
+            # or all of them.
+            _ACTOR_BATTLE_CHUNK = 2000
+
+            eligible_battle_rows = db.fetch_all(
+                "SELECT battle_id FROM battle_rollups "
+                "WHERE eligible_for_suspicion = 1 "
+                "ORDER BY battle_id"
+            )
+            eligible_battle_ids: list[str] = [
+                str(row["battle_id"]) for row in eligible_battle_rows if row.get("battle_id")
+            ]
+            total_battles = len(eligible_battle_ids)
+
+            # Step 1: wipe the table in one short transaction so stale rows
+            # for battles that are no longer eligible are removed.  The
+            # DELETE on an indexed table is effectively an index scan and
+            # takes a fraction of a second even on ~300k rows; it does not
+            # need to be chunked itself.
+            db.run_in_transaction(
+                lambda _conn, cursor: cursor.execute("DELETE FROM battle_actor_features")
+            )
+
+            # Step 2: insert in chunks.  Each chunk is its own transaction
+            # so lock hold time is bounded and a mid-rewrite connection
+            # drop only costs us the current chunk (which
+            # `run_in_transaction` will retry up to 3× on 1205/2013/2006).
+            def _insert_chunk(chunk_ids: list[str]) -> int:
+                if not chunk_ids:
+                    return 0
+                placeholders = ",".join(["%s"] * len(chunk_ids))
+
+                def _do(_conn, cursor) -> int:
+                    written = cursor.execute(
+                        f"""
+                        INSERT INTO battle_actor_features (
+                            battle_id, character_id, side_key, participation_count,
+                            centrality_score, visibility_score,
+                            is_logi, is_command, is_capital,
+                            participated_in_high_sustain, participated_in_low_sustain,
+                            computed_at
+                        )
+                        SELECT
+                            bp.battle_id,
+                            bp.character_id,
+                            bp.side_key,
+                            bp.participation_count,
                             bp.participation_count / GREATEST(
                                 MAX(bp.participation_count) OVER (PARTITION BY bp.battle_id), 1
-                            )
-                            + 0.2 * COALESCE(bp.is_logi, 0)
-                            + 0.2 * COALESCE(bp.is_command, 0)
-                            + 0.3 * COALESCE(bp.is_capital, 0)
-                        ) AS visibility_score,
-                        COALESCE(bp.is_logi, 0),
-                        COALESCE(bp.is_command, 0),
-                        COALESCE(bp.is_capital, 0),
-                        CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'high_sustain' THEN 1 ELSE 0 END,
-                        CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'low_sustain' THEN 1 ELSE 0 END,
-                        %s
-                    FROM battle_participants bp
-                    INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
-                    LEFT JOIN battle_anomalies ba
-                        ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
-                    WHERE br.eligible_for_suspicion = 1
-                    """,
-                    (computed_at,),
-                )
+                            ) AS centrality_score,
+                            LEAST(1.0,
+                                bp.participation_count / GREATEST(
+                                    MAX(bp.participation_count) OVER (PARTITION BY bp.battle_id), 1
+                                )
+                                + 0.2 * COALESCE(bp.is_logi, 0)
+                                + 0.2 * COALESCE(bp.is_command, 0)
+                                + 0.3 * COALESCE(bp.is_capital, 0)
+                            ) AS visibility_score,
+                            COALESCE(bp.is_logi, 0),
+                            COALESCE(bp.is_command, 0),
+                            COALESCE(bp.is_capital, 0),
+                            CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'high_sustain' THEN 1 ELSE 0 END,
+                            CASE WHEN COALESCE(ba.anomaly_class, 'normal') = 'low_sustain' THEN 1 ELSE 0 END,
+                            %s
+                        FROM battle_participants bp
+                        INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+                        LEFT JOIN battle_anomalies ba
+                            ON ba.battle_id = bp.battle_id AND ba.side_key = bp.side_key
+                        WHERE br.eligible_for_suspicion = 1
+                          AND bp.battle_id IN ({placeholders})
+                        """,
+                        (computed_at, *chunk_ids),
+                    )
+                    return int(written or 0)
+
+                return int(db.run_in_transaction(_do))
+
+            for offset in range(0, total_battles, _ACTOR_BATTLE_CHUNK):
+                chunk = eligible_battle_ids[offset:offset + _ACTOR_BATTLE_CHUNK]
+                rows_written += _insert_chunk(chunk)
             rows_processed = rows_written
 
-            # Derive enrichment priorities from the just-written rows instead
-            # of tracking per-row in Python.
+            # Derive enrichment priorities from the just-written rows.  Pass
+            # `restart_on_conn_drop=True` so a mid-stream `wait_timeout` /
+            # `InterfaceError(0, '')` transparently retries the whole
+            # stream (#966, #976).  Safe here because we only write into
+            # `enrichment_priorities[character_id] = max_vis` — re-seeing
+            # a row is idempotent.
             for batch in db.iterate_batches(
                 "SELECT character_id, MAX(visibility_score) AS max_vis "
                 "FROM battle_actor_features WHERE character_id > 0 "
                 "GROUP BY character_id",
                 batch_size=5000,
+                restart_on_conn_drop=True,
             ):
                 for row in batch:
                     enrichment_priorities[int(row["character_id"])] = float(row["max_vis"])
@@ -1379,6 +1488,22 @@ def run_compute_battle_actor_features(
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
         _battle_log(runtime, "battle_intelligence.job.failed", {"job_name": "compute_battle_actor_features", "status": "failed", "error_text": str(exc), "rows_processed": rows_processed, "rows_written": rows_written, "dry_run": dry_run})
         raise
+    finally:
+        # Always release the compute_job_locks lease, even if the work raised.
+        # Idempotent — if the row has already been reaped by another process
+        # (TTL expired) the DELETE is a no-op.
+        try:
+            release_job_lock(db, _ACTOR_LOCK_KEY, lock_owner)
+        except Exception as release_exc:  # pragma: no cover — best-effort cleanup
+            _battle_log(
+                runtime,
+                "battle_intelligence.job.lock_release_failed",
+                {
+                    "job_name": "compute_battle_actor_features",
+                    "lock_key": _ACTOR_LOCK_KEY,
+                    "error_text": str(release_exc),
+                },
+            )
 
 
 def run_compute_suspicion_scores(db: SupplyCoreDb, runtime: dict[str, Any] | None = None, *, dry_run: bool = False) -> dict[str, Any]:

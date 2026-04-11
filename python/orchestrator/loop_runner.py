@@ -702,6 +702,38 @@ def _run_loop(
                 if not tier_due:
                     continue
 
+                # Mid-cycle memory gate (tier-barriers path).  The compute
+                # lane runs with --memory-max-gb 1.5 / MemoryMax=2G and fires
+                # several heavy compute_battle_* jobs in parallel inside
+                # display tier T5.  Their combined RSS can easily blow past
+                # the abort threshold between tiers, and without this check
+                # we'd only notice at the *next* cycle-start — by which
+                # time the kernel OOM-killer has already fired
+                # (supplycore-lane-compute.service: Failed with result
+                # 'oom-kill', auto-log #1008).  Re-check RSS before
+                # dispatching each new tier so we shut down gracefully for
+                # a systemd restart instead of being SIGKILLed.  PR #1015
+                # / #1017 added the same gate to the dependency-aware
+                # path; this mirrors it for the tier-barriers path used by
+                # all the non-compute-bg lanes.
+                mem = resident_memory_bytes()
+                if mem >= memory_abort_bytes:
+                    logger.warning(
+                        f"{loop_name}: memory abort threshold reached mid-cycle "
+                        f"({mem / (1024**3):.1f} GiB) at tier {tier_idx}/{len(tiers)}, "
+                        "stopping dispatch and requesting shutdown",
+                        payload={
+                            "event": "loop_runner.memory_abort_midcycle",
+                            "loop": loop_name,
+                            "tier": tier_idx,
+                            "total_tiers": len(tiers),
+                            "memory_bytes": mem,
+                            "memory_abort_bytes": memory_abort_bytes,
+                        },
+                    )
+                    shutdown_event.set()
+                    break
+
                 outcomes = run_tier(
                     tier_index=tier_idx,
                     tier_jobs=tier_due,
