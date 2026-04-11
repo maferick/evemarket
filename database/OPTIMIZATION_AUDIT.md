@@ -317,6 +317,73 @@ Added InfluxDB-first query functions for time-series workloads:
 **Offload to InfluxDB:**
 - Killmail loss summaries, doctrine activity trends, stock window queries → native time-series aggregation instead of SQL GROUP BY DATE patterns
 
+## Phase 3: MariaDB query-tips review (2026-04-11)
+
+### Source
+
+- https://mariadb.com/docs/server/ha-and-performance/optimization-and-tuning/query-optimizations — full list of MariaDB query optimization tips.
+- Full re-scan of `src/db.php` (~20k lines), `src/functions.php` (~28k lines), `public/**`, `public-proxy/**`, `python/**`, and `database/migrations/**` against each applicable tip.
+
+### Tips checked
+
+| # | Tip | Result |
+|---|---|---|
+| 2 | Optimize big DELETEs | Already batched via `LIMIT` + date-scoped prunes in `db_prune_before_datetime()`, `db_market_order_snapshots_summary_delete_window()`, `db_market_history_daily_delete_window()`. No change. |
+| 4 | ORDER BY RAND() / sampling | Zero occurrences. Clean. |
+| 7 | Remove unnecessary DISTINCT | **3 fixes applied** (see below). |
+| 8 | Equality propagation / anti-join | **1 fix applied** (`NOT IN` → `LEFT JOIN … IS NULL`). |
+| 10/15/17 | FORCE/USE/IGNORE INDEX | Zero hints in use. Clean — optimizer is trusted. |
+| 11 | Groupwise maximum | No correlated `MAX()` sub-selects on indexed columns; rank-by-subquery in `db_market_hub_local_history_daily` is intentional and bounded. |
+| 12 | GUID/UUID | Not applicable — primary keys are integer IDs throughout. |
+| 14 | Batch inserts | Batch writers added in Phase 2 (`perf(jobs): batch row-by-row writes across hot compute jobs`). No regressions. |
+| 16 | Index condition pushdown | Enabled by default in the tuned `optimizer_switch` from Phase 2. |
+| 19 | LIMIT ROWS EXAMINED | Not a code change — server-side safety net. |
+| 20 | Pagination with offset | Public pagination endpoints (`recent-killmails`, `theaters`) still use `LIMIT :offset`. **Deferred** — keyset pagination is a user-visible API change and needs a separate PR. Documented in follow-ups. |
+| 21 | Outer join reordering | No forced join order hints; optimizer is free to reorder. |
+| 23 | Sargable DATE/TIME predicates | **1 fix applied** (`TIMESTAMPDIFF(...) >= …` → direct `DATE_SUB/DATE_ADD` boundaries). |
+| 24 | Sargable UPPER/LOWER predicates | No `UPPER(col) = …` / `LOWER(col) = …` on indexed columns. `LOWER(col) LIKE '%…%'` style: only leading-wildcard hits are intentional full-scan entity-name searches already backstopped by a numeric-range fallback. |
+
+### Query changes applied in this phase
+
+All changes are in `src/db.php`:
+
+1. **`db_sync_schedule_fetch_backfill_candidates()` — sargable time predicates (tip 23).**
+   - Before: `TIMESTAMPDIFF(SECOND, last_finished_at, UTC_TIMESTAMP()) >= GREATEST(60, min_backfill_gap_seconds)` and `TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), next_due_at) <= max_early_start_seconds`.
+   - After: `last_finished_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL GREATEST(60, min_backfill_gap_seconds) SECOND)` and `next_due_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL max_early_start_seconds SECOND)`.
+   - Impact: even though `sync_schedules` is only ~34 rows, the predicate can now use the existing `last_finished_at` / `next_due_at` indexes instead of forcing a per-row function evaluation, and the pattern stops leaking into copies of this query elsewhere.
+
+2. **`db_pilot_search()` — redundant `SELECT DISTINCT` dropped (tip 7).**
+   - Before: `SELECT DISTINCT … GROUP BY emc.entity_id`.
+   - After: `SELECT … GROUP BY emc.entity_id`.
+   - `GROUP BY` on the primary key already guarantees row uniqueness; the `DISTINCT` was adding a wasted sort/dedup pass on top of the group-by.
+
+3. **`db_battle_intelligence_top_characters()` — `NOT IN` anti-join + redundant `DISTINCT` (tips 7, 8).**
+   - Before: `WHERE cbs.character_id NOT IN (SELECT character_id FROM character_counterintel_scores) AND cbs.character_id IN (SELECT DISTINCT ka.character_id FROM killmail_attackers ka …)`.
+   - After: `LEFT JOIN character_counterintel_scores ccs_exclude ON ccs_exclude.character_id = cbs.character_id WHERE ccs_exclude.character_id IS NULL AND cbs.character_id IN (SELECT ka.character_id FROM killmail_attackers ka …)`.
+   - Also removed `DISTINCT` from the inner `IN (SELECT DISTINCT bp.character_id …)` in the upper UNION branch — `IN` is already a semi-join and does not benefit from an inner `DISTINCT`.
+   - Impact: `NOT IN` on sub-queries is NULL-unsafe (returns unknown if the subquery can yield `NULL`) and blocks most semi-join strategies. The anti-join form lets MariaDB use the PK index on `character_counterintel_scores` directly. Dropping the inner `DISTINCT` avoids a needless dedup pass on the already-semi-joined set.
+
+4. **`db_graph_query_preset_execute()` — redundant `DISTINCT` in tracked-alliance filter (tip 7).**
+   - Before: `WHERE _inner.character_id IN (SELECT DISTINCT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (…))`.
+   - After: `WHERE _inner.character_id IN (SELECT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (…))`.
+   - Same rationale: `IN` is a semi-join; the inner `DISTINCT` is pure overhead.
+
+### Findings intentionally left alone
+
+- **`db_killmail_overview_filter_options()` `LEFT JOIN entity_metadata_cache`** — an automated scan flagged this as "LEFT JOIN that could be INNER" because the outer `WHERE` filters the driving column. It is a **false positive**: the LEFT JOIN is on the metadata cache (not the driving table) and is required for the `COALESCE(emc.entity_name, CONCAT('Alliance #', e.victim_alliance_id))` fallback. Promoting it would drop entities whose metadata hasn't been resolved yet.
+- **Bidirectional edge `OR` predicates** on `small_engagement_copresence`, `character_copresence_edges`, `character_typed_interactions` (`a_id = ? OR b_id = ?`). Already documented in inline comments, already has a Neo4j-preferred path (Phase 2), and `UNION ALL` rewrites are riskier than the existing index_merge plan. Kept as-is.
+- **`DATE()` / `DATE_FORMAT()` in `GROUP BY` for bucket rollups** (monthly histogram, 15-minute activity buckets, etc.). These are design-level bucket expressions that already read from narrow covering indexes (`idx_killmail_mailtype_effective_seq`). Replacing them with stored generated columns is a schema migration, not a query rewrite. Left for a future phase.
+- **`SELECT DISTINCT` in `db_killmail_overview_filter_options()` / `search-alliances.php` / `search-corporations.php`** — these DISTINCTs are doing real work (collapsing many killmails per entity). Rewriting to `GROUP BY` would be a readability change, not a performance change.
+- **`COUNT(*)` pagination totals** on large tables (`killmail_events`, `market_deal_alerts_current`, `alliance_dossiers`, `threat_corridors`). Replacing them with cached/approximate counts is a behavior change and is tracked below.
+
+### Follow-ups from this phase
+
+8. **Keyset pagination** for public list endpoints (`public/api/public/recent-killmails.php`, `public/api/public/theaters.php`) — replace `LIMIT :offset, :size` with `sequence_id < ?` / `id < ?` keyset cursors so deep pages stop scanning `offset + limit` rows.
+9. **Cached pagination totals** — tie `SELECT COUNT(*)` results on `killmail_events` / `alliance_dossiers` / `threat_corridors` to a short TTL cache instead of recomputing on every page hit.
+10. **Generated bucket columns** — add stored `bucket_day DATE GENERATED ALWAYS AS (DATE(effective_killmail_at)) VIRTUAL` (or similar) with their own indexes so monthly/daily histograms can `GROUP BY bucket_day` without a per-row function call.
+11. **`FULLTEXT` index on `entity_metadata_cache.entity_name`** — lets the public search endpoints drop the leading-wildcard `LIKE '%…%'` path for infix matches instead of relying on the numeric-range backstop.
+12. **Keyset drain for `bin/python_scheduler_bridge.php` `killmails-missing-zkb` batch** — swap `LIMIT ? OFFSET ?` for `killmail_id > ? ORDER BY killmail_id ASC LIMIT ?` once the Python caller side is updated to track the cursor.
+
 ## Follow-up plan for riskier phases
 
 1. **Killmail raw archive split**: move `raw_killmail_json` and `zkb_json` to an archive table keyed by `sequence_id` once volume justifies it.

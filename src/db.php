@@ -9254,12 +9254,12 @@ function db_sync_schedule_fetch_backfill_candidates(int $limit = 20): array
            AND (next_due_at IS NULL OR next_due_at > UTC_TIMESTAMP())
            AND (
                 last_finished_at IS NULL
-                OR TIMESTAMPDIFF(SECOND, last_finished_at, UTC_TIMESTAMP()) >= GREATEST(60, min_backfill_gap_seconds)
+                OR last_finished_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL GREATEST(60, min_backfill_gap_seconds) SECOND)
            )
            AND (
                 max_early_start_seconds <= 0
                 OR next_due_at IS NULL
-                OR TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), next_due_at) <= max_early_start_seconds
+                OR next_due_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL max_early_start_seconds SECOND)
            )
          ORDER BY ' . $priorityRank . ' ASC,
                   CASE WHEN last_finished_at IS NULL THEN 0 ELSE 1 END ASC,
@@ -14691,7 +14691,7 @@ function db_pilot_search(string $query, int $limit = 30): array
     }
     $safeLimit = max(1, min(100, $limit));
     return db_select(
-        'SELECT DISTINCT
+        'SELECT
             emc.entity_id AS character_id,
             emc.entity_name AS character_name,
             emc_a.entity_name AS alliance_name,
@@ -14972,7 +14972,7 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
          LEFT JOIN character_behavioral_scores cbs ON cbs.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id IN (
-             SELECT DISTINCT bp.character_id FROM battle_participants bp
+             SELECT bp.character_id FROM battle_participants bp
              WHERE bp.alliance_id IN (' . $placeholders . ')
          )
          UNION
@@ -14989,9 +14989,10 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
             cbs.behavioral_risk_score AS blended_score
          FROM character_behavioral_scores cbs
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
-         WHERE cbs.character_id NOT IN (SELECT character_id FROM character_counterintel_scores)
+         LEFT JOIN character_counterintel_scores ccs_exclude ON ccs_exclude.character_id = cbs.character_id
+         WHERE ccs_exclude.character_id IS NULL
            AND cbs.character_id IN (
-               SELECT DISTINCT ka.character_id FROM killmail_attackers ka
+               SELECT ka.character_id FROM killmail_attackers ka
                INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
                WHERE ke.victim_alliance_id IN (' . $placeholders . ')
                   OR ka.alliance_id IN (' . $placeholders . ')
@@ -15904,7 +15905,7 @@ function db_graph_query_preset_execute(string $presetKey, array $params = []): a
     if ($trackedAllianceIds !== [] && stripos($template, 'character_id') !== false && $presetKey !== 'recurring_motifs') {
         $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
         $trackedCte = 'SELECT _inner.* FROM (' . $template . ') _inner '
-            . 'WHERE _inner.character_id IN (SELECT DISTINCT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
+            . 'WHERE _inner.character_id IN (SELECT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
         $template = $trackedCte;
         $queryParams = array_merge([$limit], $trackedAllianceIds);
     }
