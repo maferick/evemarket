@@ -3757,3 +3757,72 @@ CREATE TABLE IF NOT EXISTS model_training_split_members (
     CONSTRAINT fk_mtsm_split FOREIGN KEY (split_id)
         REFERENCES model_training_splits(split_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy detection platform — Phase 3 (identity resolution)
+--
+-- Infers probable shared-operator / alt links between characters from
+-- organizational, temporal, copresence, behavioral, and graph-embedding
+-- signals. Outputs feed Phase 4 ring case detection and Phase 5 per-character
+-- spy-risk profiles. Operator guardrail in docs/IDENTITY_RESOLUTION_DISCLAIMER.md.
+-- Migration: database/migrations/20260411_identity_resolution.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_identity_links (
+    link_id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    character_id_a       BIGINT UNSIGNED NOT NULL,
+    character_id_b       BIGINT UNSIGNED NOT NULL,
+    link_score           DECIMAL(10,6) NOT NULL,
+    confidence_tier      ENUM('low','medium','high') NOT NULL,
+    window_label         VARCHAR(20) NOT NULL DEFAULT 'all_time',
+    org_history_score    DECIMAL(10,6) NOT NULL DEFAULT 0,
+    copresence_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    temporal_score       DECIMAL(10,6) NOT NULL DEFAULT 0,
+    cross_side_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    behavior_sim_score   DECIMAL(10,6) NOT NULL DEFAULT 0,
+    embedding_sim_score  DECIMAL(10,6) NOT NULL DEFAULT 0,
+    evidence_json        LONGTEXT NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    source_run_id        VARCHAR(64) NOT NULL,
+    UNIQUE KEY uq_cil_pair_window (character_id_a, character_id_b, window_label),
+    KEY idx_cil_a_tier (character_id_a, confidence_tier, link_score),
+    KEY idx_cil_b_tier (character_id_b, confidence_tier, link_score),
+    KEY idx_cil_score (link_score, confidence_tier),
+    KEY idx_cil_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_identity_clusters (
+    cluster_id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    member_count         INT UNSIGNED NOT NULL,
+    cluster_confidence   DECIMAL(10,6) NOT NULL,
+    internal_density     DECIMAL(10,6) NOT NULL,
+    top_evidence_json    LONGTEXT NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    source_run_id        VARCHAR(64) NOT NULL,
+    KEY idx_cic_confidence (cluster_confidence, member_count),
+    KEY idx_cic_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_identity_cluster_members (
+    cluster_id           BIGINT UNSIGNED NOT NULL,
+    character_id         BIGINT UNSIGNED NOT NULL,
+    membership_score     DECIMAL(10,6) NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    PRIMARY KEY (cluster_id, character_id),
+    KEY idx_cicm_char (character_id, membership_score),
+    CONSTRAINT fk_cicm_cluster FOREIGN KEY (cluster_id)
+        REFERENCES character_identity_clusters(cluster_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS identity_resolution_runs (
+    run_id                  VARCHAR(64) NOT NULL PRIMARY KEY,
+    started_at              DATETIME NOT NULL,
+    finished_at             DATETIME DEFAULT NULL,
+    status                  VARCHAR(20) NOT NULL DEFAULT 'running',
+    candidate_pairs         INT UNSIGNED NOT NULL DEFAULT 0,
+    links_written           INT UNSIGNED NOT NULL DEFAULT 0,
+    clusters_written        INT UNSIGNED NOT NULL DEFAULT 0,
+    threshold_config_json   LONGTEXT NULL,
+    score_distribution_json LONGTEXT NULL,
+    error_text              TEXT NULL,
+    KEY idx_irr_status (status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
