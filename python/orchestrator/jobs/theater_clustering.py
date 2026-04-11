@@ -1066,8 +1066,21 @@ def _flush_theaters(
             cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({new_id_placeholders})", tuple(new_theater_ids))
 
         # Upsert theaters — preserve analysis fields (total_kills, total_isk, anomaly_score)
-        for t in theaters:
-            cursor.execute(
+        # Collapse the per-theater cursor.execute() loop into a single
+        # executemany() to cut N round-trips down to one.
+        if theaters:
+            theater_rows = [
+                (
+                    t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
+                    t["start_time"], t["end_time"], t["duration_seconds"],
+                    t["battle_count"], t["system_count"], t["total_kills"], t["total_isk"],
+                    t["participant_count"], t["anomaly_score"],
+                    t.get("max_gate_span"), t.get("avg_gate_distance"), t.get("clustering_method", "constellation"),
+                    t["computed_at"],
+                )
+                for t in theaters
+            ]
+            cursor.executemany(
                 """
                 INSERT INTO theaters (
                     theater_id, label, primary_system_id, region_id,
@@ -1092,14 +1105,7 @@ def _flush_theaters(
                     clustering_method = VALUES(clustering_method),
                     computed_at = VALUES(computed_at)
                 """,
-                (
-                    t["theater_id"], t["label"], t["primary_system_id"], t["region_id"],
-                    t["start_time"], t["end_time"], t["duration_seconds"],
-                    t["battle_count"], t["system_count"], t["total_kills"], t["total_isk"],
-                    t["participant_count"], t["anomaly_score"],
-                    t.get("max_gate_span"), t.get("avg_gate_distance"), t.get("clustering_method", "constellation"),
-                    t["computed_at"],
-                ),
+                theater_rows,
             )
             rows_written += max(0, int(cursor.rowcount or 0))
 

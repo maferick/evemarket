@@ -312,6 +312,9 @@ def _campaigns_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = N
     active_campaign_ids: set[int] = set()
     entity_ids: set[int] = set()
 
+    # Collect all upsert rows and then flush in one executemany call
+    # instead of one round-trip per campaign.
+    campaign_rows: list[list[Any]] = []
     for entry in body:
         campaign_id = int(entry.get("campaign_id") or 0)
         if campaign_id <= 0:
@@ -330,7 +333,13 @@ def _campaigns_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = N
         defender_score = float(entry.get("defender_score") or 0)
         start_time = str(entry.get("start_time") or now_sql).replace("T", " ").replace("Z", "")[:19]
 
-        db.execute(
+        campaign_rows.append([
+            campaign_id, event_type, solar_system_id, constellation_id, structure_id,
+            defender_id, attackers_score, defender_score, start_time, now_sql, now_sql,
+        ])
+
+    if campaign_rows:
+        db.execute_many(
             """INSERT INTO sovereignty_campaigns
                (campaign_id, event_type, solar_system_id, constellation_id, structure_id,
                 defender_id, attackers_score, defender_score, start_time, first_seen_at, last_seen_at, is_active)
@@ -340,10 +349,9 @@ def _campaigns_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = N
                    defender_score = VALUES(defender_score),
                    last_seen_at = VALUES(last_seen_at),
                    is_active = 1""",
-            [campaign_id, event_type, solar_system_id, constellation_id, structure_id,
-             defender_id, attackers_score, defender_score, start_time, now_sql, now_sql],
+            campaign_rows,
         )
-        rows_written += 1
+        rows_written += len(campaign_rows)
 
     # Mark campaigns no longer in API response as inactive and archive them.
     previously_active = db.fetch_all(
@@ -352,14 +360,28 @@ def _campaigns_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = N
         "FROM sovereignty_campaigns WHERE is_active = 1"
     )
     newly_ended = 0
+    ended_campaign_ids: list[int] = []
+    history_rows: list[list[Any]] = []
     for row in previously_active:
         cid = int(row["campaign_id"])
         if cid in active_campaign_ids:
             continue
-        # Campaign disappeared from API — mark inactive.
-        db.execute("UPDATE sovereignty_campaigns SET is_active = 0 WHERE campaign_id = %s", (cid,))
-        # Archive to history with outcome=unknown (delayed resolution).
+        ended_campaign_ids.append(cid)
+        history_rows.append([
+            cid, row["event_type"], row["solar_system_id"], row["constellation_id"],
+            row["structure_id"], row["defender_id"], float(row["attackers_score"]),
+            float(row["defender_score"]), str(row["start_time"])[:19], now_sql,
+        ])
+        newly_ended += 1
+
+    if ended_campaign_ids:
+        # Single bulk UPDATE instead of one per ended campaign.
+        placeholders = ",".join(["%s"] * len(ended_campaign_ids))
         db.execute(
+            f"UPDATE sovereignty_campaigns SET is_active = 0 WHERE campaign_id IN ({placeholders})",
+            ended_campaign_ids,
+        )
+        db.execute_many(
             """INSERT INTO sovereignty_campaigns_history
                (campaign_id, event_type, solar_system_id, constellation_id, structure_id,
                 defender_id, final_attackers_score, final_defender_score, outcome, start_time, ended_at)
@@ -368,11 +390,8 @@ def _campaigns_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = N
                    final_attackers_score = VALUES(final_attackers_score),
                    final_defender_score = VALUES(final_defender_score),
                    ended_at = VALUES(ended_at)""",
-            [cid, row["event_type"], row["solar_system_id"], row["constellation_id"],
-             row["structure_id"], row["defender_id"], float(row["attackers_score"]),
-             float(row["defender_score"]), str(row["start_time"])[:19], now_sql],
+            history_rows,
         )
-        newly_ended += 1
 
     # Delayed outcome resolution for campaigns ended >60 minutes ago.
     _resolve_campaign_outcomes(db, now_sql)
@@ -409,40 +428,60 @@ def _resolve_campaign_outcomes(db: SupplyCoreDb, now_sql: str) -> None:
            WHERE outcome = 'unknown'
              AND ended_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 MINUTE)"""
     )
+    if not unknown_rows:
+        return
+
+    # Bulk-load all referenced structures and map systems once, instead of
+    # doing two N+1 SELECTs per unknown campaign.
+    structure_ids = {int(r["structure_id"]) for r in unknown_rows if r.get("structure_id")}
+    system_ids = {int(r["solar_system_id"]) for r in unknown_rows if r.get("solar_system_id")}
+
+    structures: dict[int, int] = {}
+    if structure_ids:
+        placeholders = ",".join(["%s"] * len(structure_ids))
+        struct_rows = db.fetch_all(
+            f"SELECT structure_id, alliance_id FROM sovereignty_structures "
+            f"WHERE structure_id IN ({placeholders})",
+            list(structure_ids),
+        )
+        structures = {int(r["structure_id"]): int(r.get("alliance_id") or 0) for r in struct_rows}
+
+    map_owners: dict[int, int] = {}
+    if system_ids:
+        placeholders = ",".join(["%s"] * len(system_ids))
+        map_rows = db.fetch_all(
+            f"SELECT system_id, alliance_id FROM sovereignty_map "
+            f"WHERE system_id IN ({placeholders})",
+            list(system_ids),
+        )
+        map_owners = {int(r["system_id"]): int(r.get("alliance_id") or 0) for r in map_rows}
+
+    update_params: list[tuple[str, int]] = []
     for row in unknown_rows:
         system_id = int(row["solar_system_id"])
         structure_id = int(row["structure_id"])
         defender_id = int(row["defender_id"])
-        start_time = row["start_time"]
 
         outcome = "defended"  # default if no change detected
-
         # 1. Structure evidence (highest confidence).
-        struct_row = db.fetch_one(
-            "SELECT alliance_id FROM sovereignty_structures WHERE structure_id = %s",
-            (structure_id,),
-        )
-        if struct_row is None:
-            # Structure disappeared → captured.
-            outcome = "captured"
-        elif int(struct_row.get("alliance_id") or 0) != defender_id:
-            # Structure owner changed → captured.
-            outcome = "captured"
+        if structure_id not in structures:
+            outcome = "captured"  # structure disappeared
+        elif structures[structure_id] != defender_id:
+            outcome = "captured"  # owner changed
         else:
             # 2. Map evidence.
-            map_row = db.fetch_one(
-                "SELECT alliance_id FROM sovereignty_map WHERE system_id = %s",
-                (system_id,),
-            )
-            if map_row and int(map_row.get("alliance_id") or 0) != defender_id:
+            if system_id in map_owners and map_owners[system_id] != defender_id:
                 outcome = "captured"
 
-        db.execute(
-            "UPDATE sovereignty_campaigns_history SET outcome = %s WHERE id = %s",
-            [outcome, row["id"]],
-        )
+        update_params.append((outcome, row["id"]))
         if outcome != "defended":
             log.info("Campaign %d outcome resolved: %s", int(row["campaign_id"]), outcome)
+
+    if update_params:
+        db.execute_many(
+            "UPDATE sovereignty_campaigns_history SET outcome = %s WHERE id = %s",
+            update_params,
+        )
 
 
 # ── Job B: Structures Sync (180s) ───────────────────────────────────────────
@@ -482,6 +521,16 @@ def _structures_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = 
     entity_ids: set[int] = set()
     history_events = 0
 
+    # Accumulate rows for batch writes instead of issuing one round-trip per
+    # structure / per history event.  Each history flavour uses a different
+    # column shape so they're kept in separate buckets.
+    structure_upserts: list[list[Any]] = []
+    history_appeared: list[list[Any]] = []
+    history_owner_changed: list[list[Any]] = []
+    history_adm_changed: list[list[Any]] = []
+    history_vuln_changed: list[list[Any]] = []
+    history_disappeared: list[list[Any]] = []
+
     for entry in body:
         structure_id = int(entry.get("structure_id") or 0)
         if structure_id <= 0:
@@ -507,13 +556,9 @@ def _structures_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = 
         prev = existing.get(structure_id)
         if prev is None:
             # New structure appeared.
-            db.execute(
-                """INSERT INTO sovereignty_structures_history
-                   (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
-                    event_type, new_adm, recorded_at)
-                   VALUES (%s, %s, %s, %s, %s, 'appeared', %s, %s)""",
-                [structure_id, alliance_id, solar_system_id, structure_type_id, role, adm_val, now_sql],
-            )
+            history_appeared.append([
+                structure_id, alliance_id, solar_system_id, structure_type_id, role, adm_val, now_sql,
+            ])
             history_events += 1
         else:
             prev_alliance = int(prev.get("alliance_id") or 0)
@@ -522,42 +567,51 @@ def _structures_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = 
             prev_vuln_end = str(prev.get("vulnerable_end_time") or "")[:19] if prev.get("vulnerable_end_time") else None
 
             if prev_alliance != alliance_id:
-                db.execute(
-                    """INSERT INTO sovereignty_structures_history
-                       (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
-                        event_type, previous_alliance_id, new_alliance_id, recorded_at)
-                       VALUES (%s, %s, %s, %s, %s, 'owner_changed', %s, %s, %s)""",
-                    [structure_id, alliance_id, solar_system_id, structure_type_id, role,
-                     prev_alliance, alliance_id, now_sql],
-                )
+                history_owner_changed.append([
+                    structure_id, alliance_id, solar_system_id, structure_type_id, role,
+                    prev_alliance, alliance_id, now_sql,
+                ])
                 history_events += 1
 
             if prev_adm is not None and adm_val is not None and abs(prev_adm - adm_val) >= 0.1:
-                db.execute(
-                    """INSERT INTO sovereignty_structures_history
-                       (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
-                        event_type, previous_adm, new_adm, recorded_at)
-                       VALUES (%s, %s, %s, %s, %s, 'adm_changed', %s, %s, %s)""",
-                    [structure_id, alliance_id, solar_system_id, structure_type_id, role,
-                     prev_adm, adm_val, now_sql],
-                )
+                history_adm_changed.append([
+                    structure_id, alliance_id, solar_system_id, structure_type_id, role,
+                    prev_adm, adm_val, now_sql,
+                ])
                 history_events += 1
 
             if prev_vuln_start != vuln_start_sql or prev_vuln_end != vuln_end_sql:
-                db.execute(
-                    """INSERT INTO sovereignty_structures_history
-                       (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
-                        event_type, details_json, recorded_at)
-                       VALUES (%s, %s, %s, %s, %s, 'vuln_changed', %s, %s)""",
-                    [structure_id, alliance_id, solar_system_id, structure_type_id, role,
-                     json.dumps({"prev_start": prev_vuln_start, "prev_end": prev_vuln_end,
-                                 "new_start": vuln_start_sql, "new_end": vuln_end_sql}),
-                     now_sql],
-                )
+                history_vuln_changed.append([
+                    structure_id, alliance_id, solar_system_id, structure_type_id, role,
+                    json.dumps({"prev_start": prev_vuln_start, "prev_end": prev_vuln_end,
+                                "new_start": vuln_start_sql, "new_end": vuln_end_sql}),
+                    now_sql,
+                ])
                 history_events += 1
 
-        # Upsert structure.
-        db.execute(
+        # Queue structure upsert.
+        structure_upserts.append([
+            structure_id, alliance_id, solar_system_id, structure_type_id, role,
+            adm_val, vuln_start_sql, vuln_end_sql, now_sql,
+        ])
+        rows_written += 1
+
+    # Detect disappeared structures.
+    disappeared_ids: list[int] = []
+    for sid, prev in existing.items():
+        if sid not in seen_structure_ids:
+            history_disappeared.append([
+                sid, int(prev.get("alliance_id") or 0), int(prev.get("solar_system_id") or 0),
+                int(prev.get("structure_type_id") or 0), str(prev.get("structure_role") or "unknown"),
+                float(prev["vulnerability_occupancy_level"]) if prev.get("vulnerability_occupancy_level") is not None else None,
+                now_sql,
+            ])
+            disappeared_ids.append(sid)
+            history_events += 1
+
+    # Flush all batches.
+    if structure_upserts:
+        db.execute_many(
             """INSERT INTO sovereignty_structures
                (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
                 vulnerability_occupancy_level, vulnerable_start_time, vulnerable_end_time, fetched_at)
@@ -571,26 +625,54 @@ def _structures_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = 
                    vulnerable_start_time = VALUES(vulnerable_start_time),
                    vulnerable_end_time = VALUES(vulnerable_end_time),
                    fetched_at = VALUES(fetched_at)""",
-            [structure_id, alliance_id, solar_system_id, structure_type_id, role,
-             adm_val, vuln_start_sql, vuln_end_sql, now_sql],
+            structure_upserts,
         )
-        rows_written += 1
-
-    # Detect disappeared structures.
-    for sid, prev in existing.items():
-        if sid not in seen_structure_ids:
-            db.execute(
-                """INSERT INTO sovereignty_structures_history
-                   (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
-                    event_type, previous_adm, recorded_at)
-                   VALUES (%s, %s, %s, %s, %s, 'disappeared', %s, %s)""",
-                [sid, int(prev.get("alliance_id") or 0), int(prev.get("solar_system_id") or 0),
-                 int(prev.get("structure_type_id") or 0), str(prev.get("structure_role") or "unknown"),
-                 float(prev["vulnerability_occupancy_level"]) if prev.get("vulnerability_occupancy_level") is not None else None,
-                 now_sql],
-            )
-            db.execute("DELETE FROM sovereignty_structures WHERE structure_id = %s", (sid,))
-            history_events += 1
+    if history_appeared:
+        db.execute_many(
+            """INSERT INTO sovereignty_structures_history
+               (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
+                event_type, new_adm, recorded_at)
+               VALUES (%s, %s, %s, %s, %s, 'appeared', %s, %s)""",
+            history_appeared,
+        )
+    if history_owner_changed:
+        db.execute_many(
+            """INSERT INTO sovereignty_structures_history
+               (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
+                event_type, previous_alliance_id, new_alliance_id, recorded_at)
+               VALUES (%s, %s, %s, %s, %s, 'owner_changed', %s, %s, %s)""",
+            history_owner_changed,
+        )
+    if history_adm_changed:
+        db.execute_many(
+            """INSERT INTO sovereignty_structures_history
+               (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
+                event_type, previous_adm, new_adm, recorded_at)
+               VALUES (%s, %s, %s, %s, %s, 'adm_changed', %s, %s, %s)""",
+            history_adm_changed,
+        )
+    if history_vuln_changed:
+        db.execute_many(
+            """INSERT INTO sovereignty_structures_history
+               (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
+                event_type, details_json, recorded_at)
+               VALUES (%s, %s, %s, %s, %s, 'vuln_changed', %s, %s)""",
+            history_vuln_changed,
+        )
+    if history_disappeared:
+        db.execute_many(
+            """INSERT INTO sovereignty_structures_history
+               (structure_id, alliance_id, solar_system_id, structure_type_id, structure_role,
+                event_type, previous_adm, recorded_at)
+               VALUES (%s, %s, %s, %s, %s, 'disappeared', %s, %s)""",
+            history_disappeared,
+        )
+    if disappeared_ids:
+        placeholders = ",".join(["%s"] * len(disappeared_ids))
+        db.execute(
+            f"DELETE FROM sovereignty_structures WHERE structure_id IN ({placeholders})",
+            disappeared_ids,
+        )
 
     _queue_sov_entity_names(db, entity_ids)
 
@@ -646,6 +728,11 @@ def _map_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -
     entity_ids: set[int] = set()
     ownership_changes = 0
 
+    # Collect rows for batch upserts.  This loop previously issued 2 × N
+    # round-trips (one map upsert and optionally one history insert) which
+    # for the ~30K-system universe is the hottest path in this module.
+    map_upserts: list[list[Any]] = []
+    history_changes: list[list[Any]] = []
     for entry in body:
         system_id = int(entry.get("system_id") or 0)
         if system_id <= 0:
@@ -665,26 +752,27 @@ def _map_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -
             prev_owner_id = int(prev.get("owner_entity_id") or 0) or None
             prev_owner_type = prev.get("owner_entity_type")
             if prev_owner_id != owner_id or prev_owner_type != owner_type:
-                db.execute(
-                    """INSERT INTO sovereignty_map_history
-                       (system_id, previous_alliance_id, new_alliance_id,
-                        previous_corporation_id, new_corporation_id,
-                        previous_faction_id, new_faction_id,
-                        previous_owner_entity_id, previous_owner_entity_type,
-                        new_owner_entity_id, new_owner_entity_type, changed_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    [system_id,
-                     int(prev.get("alliance_id") or 0) or None, alliance_id,
-                     int(prev.get("corporation_id") or 0) or None, corporation_id,
-                     int(prev.get("faction_id") or 0) or None, faction_id,
-                     prev_owner_id, prev_owner_type,
-                     owner_id, owner_type, now_sql],
-                )
+                history_changes.append([
+                    system_id,
+                    int(prev.get("alliance_id") or 0) or None, alliance_id,
+                    int(prev.get("corporation_id") or 0) or None, corporation_id,
+                    int(prev.get("faction_id") or 0) or None, faction_id,
+                    prev_owner_id, prev_owner_type,
+                    owner_id, owner_type, now_sql,
+                ])
                 ownership_changes += 1
 
-        # Upsert map entry.
-        db.execute(
-            """INSERT INTO sovereignty_map
+        # Queue map upsert.
+        map_upserts.append([
+            system_id, alliance_id, corporation_id, faction_id,
+            owner_id, owner_type, now_sql,
+        ])
+        rows_written += 1
+
+    # Flush batches.  Chunk upserts into 2 000-row batches to balance
+    # transaction overhead and lock hold time; ~30K systems = ~15 batches.
+    if map_upserts:
+        upsert_sql = """INSERT INTO sovereignty_map
                (system_id, alliance_id, corporation_id, faction_id,
                 owner_entity_id, owner_entity_type, fetched_at)
                VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -694,11 +782,21 @@ def _map_processor(db: SupplyCoreDb, raw_config: dict[str, Any] | None = None) -
                    faction_id = VALUES(faction_id),
                    owner_entity_id = VALUES(owner_entity_id),
                    owner_entity_type = VALUES(owner_entity_type),
-                   fetched_at = VALUES(fetched_at)""",
-            [system_id, alliance_id, corporation_id, faction_id,
-             owner_id, owner_type, now_sql],
+                   fetched_at = VALUES(fetched_at)"""
+        for i in range(0, len(map_upserts), 2000):
+            db.execute_many(upsert_sql, map_upserts[i:i + 2000])
+
+    if history_changes:
+        db.execute_many(
+            """INSERT INTO sovereignty_map_history
+               (system_id, previous_alliance_id, new_alliance_id,
+                previous_corporation_id, new_corporation_id,
+                previous_faction_id, new_faction_id,
+                previous_owner_entity_id, previous_owner_entity_type,
+                new_owner_entity_id, new_owner_entity_type, changed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            history_changes,
         )
-        rows_written += 1
 
     _queue_sov_entity_names(db, entity_ids)
 

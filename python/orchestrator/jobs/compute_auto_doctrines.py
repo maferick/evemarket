@@ -393,7 +393,9 @@ def _upsert_doctrines(
         is_active = 1 if loss_count >= effective_min_losses else 0
 
         if existing is None:
-            db.execute(
+            # Use db.insert() which returns cursor.lastrowid, avoiding a
+            # follow-up SELECT to resolve the new doctrine id.
+            doctrine_id = db.insert(
                 """INSERT INTO auto_doctrines
                       (hull_type_id, fingerprint_hash, canonical_name,
                        first_seen_at, last_seen_at,
@@ -409,11 +411,6 @@ def _upsert_doctrines(
                     is_active,
                 ),
             )
-            row = db.fetch_one(
-                "SELECT id FROM auto_doctrines WHERE hull_type_id = %s AND fingerprint_hash = %s",
-                (hull_type_id, canonical_fp),
-            )
-            doctrine_id = int((row or {}).get("id") or 0)
         else:
             doctrine_id = int(existing["id"])
             pinned = bool(existing.get("is_pinned"))
@@ -436,14 +433,16 @@ def _upsert_doctrines(
                 ),
             )
 
-        # Rewrite modules (small row count, safer than diff).
+        # Rewrite modules (small row count, safer than diff).  Single
+        # executemany replaces a loop of N individual INSERTs per doctrine.
         db.execute("DELETE FROM auto_doctrine_modules WHERE doctrine_id = %s", (doctrine_id,))
-        for type_id, flag_cat, quantity, frequency in core:
-            db.execute(
+        if core:
+            db.execute_many(
                 """INSERT INTO auto_doctrine_modules
                       (doctrine_id, type_id, flag_category, quantity, observation_frequency)
                    VALUES (%s, %s, %s, %s, %s)""",
-                (doctrine_id, type_id, flag_cat, quantity, frequency),
+                [(doctrine_id, type_id, flag_cat, quantity, frequency)
+                 for type_id, flag_cat, quantity, frequency in core],
             )
 
         id_map[(hull_type_id, canonical_fp)] = doctrine_id
