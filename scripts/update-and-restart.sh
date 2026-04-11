@@ -50,8 +50,11 @@ CORE_UNITS=(
   supplycore-loop-runner.service
   supplycore-lane-realtime.service
   supplycore-lane-ingestion.service
-  supplycore-lane-compute.service
-  supplycore-lane-compute-bg.service
+  supplycore-lane-compute-graph.service
+  supplycore-lane-compute-battle.service
+  supplycore-lane-compute-behavioral.service
+  supplycore-lane-compute-cip.service
+  supplycore-lane-compute-misc.service
   supplycore-lane-maintenance.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
@@ -81,6 +84,9 @@ STALE_UNITS=(
   supplycore-php-compute-worker@.service
   supplycore-orchestrator.service
   supplycore-worker@.service
+  # Superseded by the compute-{graph,battle,behavioral,cip,misc} sub-lanes.
+  supplycore-lane-compute.service
+  supplycore-lane-compute-bg.service
 )
 
 usage() {
@@ -368,13 +374,20 @@ enable_new_core_units() {
   fi
 
   # Detect which runner mode the host is using so we don't start a service
-  # that conflicts with the active mode (lanes vs monolithic).
+  # that conflicts with the active mode (lanes vs monolithic).  Any lane unit
+  # being active (including legacy compute/compute-bg prior to sub-lane split)
+  # counts as lanes mode.
   local lanes_active=false
   for lane_svc in \
       supplycore-lane-realtime.service \
       supplycore-lane-ingestion.service \
       supplycore-lane-compute.service \
       supplycore-lane-compute-bg.service \
+      supplycore-lane-compute-graph.service \
+      supplycore-lane-compute-battle.service \
+      supplycore-lane-compute-behavioral.service \
+      supplycore-lane-compute-cip.service \
+      supplycore-lane-compute-misc.service \
       supplycore-lane-maintenance.service; do
     if systemctl is-active --quiet "${lane_svc}" 2>/dev/null \
         || systemctl is-enabled --quiet "${lane_svc}" 2>/dev/null; then

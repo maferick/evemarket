@@ -599,7 +599,7 @@ def _select_jobs(
         filtered = {
             key: defn
             for key, defn in filtered.items()
-            if defn.get("lane", "compute") == lane
+            if defn.get("lane", "compute-misc") == lane
         }
     return filtered
 
@@ -863,7 +863,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-_VALID_LANES = {"realtime", "ingestion", "compute", "maintenance"}
+_VALID_LANES = {
+    "realtime",
+    "ingestion",
+    "compute-graph",      # neo4j + graph analytics
+    "compute-battle",     # battle rollups, theater, escalation, suspicion
+    "compute-behavioral", # behavioral scoring, cohort, character pipeline
+    "compute-cip",        # cip_* correlation/event pipeline
+    "compute-misc",       # market/alliance/geo/AI/rollup catch-all
+    "maintenance",
+}
 
 
 def _validate_lane_assignments(definitions: dict[str, dict[str, Any]]) -> list[str]:
