@@ -4,7 +4,6 @@ Covers:
 - Geographic summary aggregation (killmail-based)
 - Behavior metrics and posture classification (killmail-based)
 - Neo4j co-presence and enemy queries (including graceful degradation)
-- SQL fallback queries (contract alignment with Neo4j results)
 - Trend computation (killmail-based)
 - Payload contract integrity (producer keys match consumer expectations)
 """
@@ -41,9 +40,7 @@ _load_geographic_summary = _mod._load_geographic_summary
 _load_behavior_metrics = _mod._load_behavior_metrics
 _load_ship_summary = _mod._load_ship_summary
 _query_co_presence_neo4j = _mod._query_co_presence_neo4j
-_query_co_presence_sql = _mod._query_co_presence_sql
 _query_enemies_neo4j = _mod._query_enemies_neo4j
-_query_enemies_sql = _mod._query_enemies_sql
 _compute_trend = _mod._compute_trend
 _classify_fleet_function = _mod._classify_fleet_function
 
@@ -282,50 +279,6 @@ class TestNeo4jCoPresence(unittest.TestCase):
         self.assertEqual(client.query.call_count, 1)
 
 
-class TestSqlCoPresence(unittest.TestCase):
-    def test_returns_canonical_keys(self) -> None:
-        """SQL co-presence fallback uses the same keys as Neo4j."""
-        db = MagicMock()
-        db.fetch_all.return_value = [
-            {"co_alliance_id": 200, "shared_battles": 5, "shared_pilots": 12},
-        ]
-
-        result = _query_co_presence_sql(db, 100)
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["alliance_id"], 200)
-        self.assertEqual(result[0]["shared_battles"], 5)
-        self.assertEqual(result[0]["shared_pilots"], 12)
-        self.assertEqual(result[0]["source"], "sql")
-        for item in result:
-            self.assertTrue(CO_PRESENT_REQUIRED_KEYS.issubset(item.keys()),
-                          f"Missing keys: {CO_PRESENT_REQUIRED_KEYS - item.keys()}")
-
-    def test_key_parity_with_neo4j(self) -> None:
-        """SQL and Neo4j return the same key set (except source value)."""
-        db = MagicMock()
-        db.fetch_all.return_value = [
-            {"co_alliance_id": 300, "shared_battles": 3, "shared_pilots": 5},
-        ]
-        client = MagicMock()
-        client.query.return_value = [
-            {"co_alliance_id": 300, "shared_battles": 3, "shared_pilots": 5},
-        ]
-
-        sql_result = _query_co_presence_sql(db, 100)
-        neo4j_result = _query_co_presence_neo4j(client, 100)
-
-        self.assertEqual(set(sql_result[0].keys()), set(neo4j_result[0].keys()),
-                        "SQL and Neo4j co-presence results must have identical key sets")
-
-    def test_empty_result(self) -> None:
-        db = MagicMock()
-        db.fetch_all.return_value = []
-
-        result = _query_co_presence_sql(db, 999)
-        self.assertEqual(result, [])
-
-
 class TestNeo4jEnemies(unittest.TestCase):
     def test_graceful_degradation_no_neo4j(self) -> None:
         result = _query_enemies_neo4j(None, 100)
@@ -363,42 +316,6 @@ class TestNeo4jEnemies(unittest.TestCase):
 
         self.assertEqual(result, [])
         self.assertEqual(client.query.call_count, 1)
-
-
-class TestSqlEnemies(unittest.TestCase):
-    def test_returns_canonical_keys(self) -> None:
-        """SQL enemy fallback uses the same keys as Neo4j."""
-        db = MagicMock()
-        db.fetch_all.return_value = [
-            {"enemy_id": 500, "engagements": 8},
-        ]
-
-        result = _query_enemies_sql(db, 100)
-
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["alliance_id"], 500)
-        self.assertEqual(result[0]["engagements"], 8)
-        self.assertEqual(result[0]["source"], "sql")
-        for item in result:
-            self.assertTrue(ENEMY_REQUIRED_KEYS.issubset(item.keys()),
-                          f"Missing keys: {ENEMY_REQUIRED_KEYS - item.keys()}")
-
-    def test_key_parity_with_neo4j(self) -> None:
-        """SQL and Neo4j return the same key set (except source value)."""
-        db = MagicMock()
-        db.fetch_all.return_value = [
-            {"enemy_id": 500, "engagements": 8},
-        ]
-        client = MagicMock()
-        client.query.return_value = [
-            {"enemy_id": 500, "engagements": 8},
-        ]
-
-        sql_result = _query_enemies_sql(db, 100)
-        neo4j_result = _query_enemies_neo4j(client, 100)
-
-        self.assertEqual(set(sql_result[0].keys()), set(neo4j_result[0].keys()),
-                        "SQL and Neo4j enemy results must have identical key sets")
 
 
 class TestTrendComputation(unittest.TestCase):

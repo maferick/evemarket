@@ -327,38 +327,39 @@ def _flush_edges_to_mariadb(
     if not all_rows:
         return 0
 
+    # Sort by (source, target) for consistent lock ordering across concurrent
+    # runs to reduce deadlock probability.
+    all_rows.sort(key=lambda r: (r[0], r[1]))
+
+    insert_sql = """
+        INSERT INTO alliance_relationships (
+            source_alliance_id, target_alliance_id, relationship_type,
+            shared_killmails, shared_pilots, confidence,
+            weight_7d, weight_30d, weight_90d,
+            first_seen_at, last_seen_at, computed_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+            shared_killmails = VALUES(shared_killmails),
+            shared_pilots = VALUES(shared_pilots),
+            confidence = VALUES(confidence),
+            weight_7d = VALUES(weight_7d),
+            weight_30d = VALUES(weight_30d),
+            weight_90d = VALUES(weight_90d),
+            first_seen_at = COALESCE(
+                LEAST(first_seen_at, VALUES(first_seen_at)),
+                VALUES(first_seen_at)
+            ),
+            last_seen_at = COALESCE(
+                GREATEST(last_seen_at, VALUES(last_seen_at)),
+                VALUES(last_seen_at)
+            ),
+            computed_at = VALUES(computed_at)
+    """
     for batch_start in range(0, len(all_rows), 500):
         chunk = all_rows[batch_start:batch_start + 500]
         with db.transaction() as (_, cursor):
-            for row in chunk:
-                cursor.execute(
-                    """
-                    INSERT INTO alliance_relationships (
-                        source_alliance_id, target_alliance_id, relationship_type,
-                        shared_killmails, shared_pilots, confidence,
-                        weight_7d, weight_30d, weight_90d,
-                        first_seen_at, last_seen_at, computed_at
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE
-                        shared_killmails = VALUES(shared_killmails),
-                        shared_pilots = VALUES(shared_pilots),
-                        confidence = VALUES(confidence),
-                        weight_7d = VALUES(weight_7d),
-                        weight_30d = VALUES(weight_30d),
-                        weight_90d = VALUES(weight_90d),
-                        first_seen_at = COALESCE(
-                            LEAST(first_seen_at, VALUES(first_seen_at)),
-                            VALUES(first_seen_at)
-                        ),
-                        last_seen_at = COALESCE(
-                            GREATEST(last_seen_at, VALUES(last_seen_at)),
-                            VALUES(last_seen_at)
-                        ),
-                        computed_at = VALUES(computed_at)
-                    """,
-                    row,
-                )
-                rows_written += max(0, int(cursor.rowcount or 0))
+            cursor.executemany(insert_sql, chunk)
+            rows_written += max(0, int(cursor.rowcount or 0))
 
     return rows_written
 
@@ -373,48 +374,53 @@ def _flush_ceasefires_to_mariadb(
         return 0
 
     rows_written = 0
-    batch = list(ceasefire_candidates.items())
 
-    for batch_start in range(0, len(batch), 500):
-        chunk = batch[batch_start:batch_start + 500]
+    def _fmt(dt: datetime | None) -> str | None:
+        return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
+    # Pre-build parameter tuples outside the transaction for minimal lock
+    # hold time, and sort by primary key for consistent lock ordering across
+    # concurrent runs.
+    params: list[tuple] = [
+        (
+            a1, a2, region_id,
+            data["co_attacks_in_region"], data["total_co_attacks"],
+            data["w7"], data["w30"], data["w90"],
+            _fmt(data["first_seen"]), _fmt(data["last_seen"]),
+            computed_at,
+        )
+        for (a1, a2, region_id), data in ceasefire_candidates.items()
+    ]
+    params.sort(key=lambda r: (r[0], r[1], r[2]))
+
+    insert_sql = """
+        INSERT INTO alliance_ceasefires (
+            alliance_id_a, alliance_id_b, region_id,
+            co_attacks_in_region, total_co_attacks,
+            weight_7d, weight_30d, weight_90d,
+            first_seen_at, last_seen_at, computed_at
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON DUPLICATE KEY UPDATE
+            co_attacks_in_region = VALUES(co_attacks_in_region),
+            total_co_attacks = VALUES(total_co_attacks),
+            weight_7d = VALUES(weight_7d),
+            weight_30d = VALUES(weight_30d),
+            weight_90d = VALUES(weight_90d),
+            first_seen_at = COALESCE(
+                LEAST(first_seen_at, VALUES(first_seen_at)),
+                VALUES(first_seen_at)
+            ),
+            last_seen_at = COALESCE(
+                GREATEST(last_seen_at, VALUES(last_seen_at)),
+                VALUES(last_seen_at)
+            ),
+            computed_at = VALUES(computed_at)
+    """
+    for batch_start in range(0, len(params), 500):
+        chunk = params[batch_start:batch_start + 500]
         with db.transaction() as (_, cursor):
-            for (a1, a2, region_id), data in chunk:
-                def _fmt(dt: datetime | None) -> str | None:
-                    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
-
-                cursor.execute(
-                    """
-                    INSERT INTO alliance_ceasefires (
-                        alliance_id_a, alliance_id_b, region_id,
-                        co_attacks_in_region, total_co_attacks,
-                        weight_7d, weight_30d, weight_90d,
-                        first_seen_at, last_seen_at, computed_at
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON DUPLICATE KEY UPDATE
-                        co_attacks_in_region = VALUES(co_attacks_in_region),
-                        total_co_attacks = VALUES(total_co_attacks),
-                        weight_7d = VALUES(weight_7d),
-                        weight_30d = VALUES(weight_30d),
-                        weight_90d = VALUES(weight_90d),
-                        first_seen_at = COALESCE(
-                            LEAST(first_seen_at, VALUES(first_seen_at)),
-                            VALUES(first_seen_at)
-                        ),
-                        last_seen_at = COALESCE(
-                            GREATEST(last_seen_at, VALUES(last_seen_at)),
-                            VALUES(last_seen_at)
-                        ),
-                        computed_at = VALUES(computed_at)
-                    """,
-                    (
-                        a1, a2, region_id,
-                        data["co_attacks_in_region"], data["total_co_attacks"],
-                        data["w7"], data["w30"], data["w90"],
-                        _fmt(data["first_seen"]), _fmt(data["last_seen"]),
-                        computed_at,
-                    ),
-                )
-                rows_written += max(0, int(cursor.rowcount or 0))
+            cursor.executemany(insert_sql, chunk)
+            rows_written += max(0, int(cursor.rowcount or 0))
 
     return rows_written
 

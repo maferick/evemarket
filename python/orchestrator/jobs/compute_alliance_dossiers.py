@@ -8,7 +8,10 @@ gate camps, and structure bashes that fall below the battle clustering threshold
 Queries MariaDB ``killmail_events`` / ``killmail_attackers`` for geography, fleet
 composition, behavior, and trends.  Co-presence and enemy data comes from the
 pre-computed ``alliance_relationships`` table (built by ``compute_alliance_relationships``
-from all killmails), with Neo4j and SQL fallbacks.
+from all killmails), with Neo4j as the only per-alliance fallback. The prior
+per-alliance raw-SQL fallback was removed because it re-ran nested DISTINCT
+joins against killmail_attackers/killmail_events once per alliance, which is
+the opposite shape of what we want under scheduler pressure.
 
 Payload Contract (JSON columns stored in alliance_dossiers)
 -----------------------------------------------------------
@@ -16,12 +19,12 @@ Payload Contract (JSON columns stored in alliance_dossiers)
 **top_co_present_json** — alliances co-occurring on the same side::
 
     [{"alliance_id": int, "alliance_name": str, "shared_battles": int,
-      "shared_pilots": int, "source": "relationship_graph"|"neo4j"|"sql"}]
+      "shared_pilots": int, "source": "relationship_graph"|"neo4j"}]
 
 **top_enemies_json** — alliances fought against on opposing sides::
 
     [{"alliance_id": int, "alliance_name": str, "engagements": int,
-      "source": "relationship_graph"|"neo4j"|"sql"}]
+      "source": "relationship_graph"|"neo4j"}]
 
 **top_regions_json**::
 
@@ -514,75 +517,6 @@ def _query_enemies_bulk(db: SupplyCoreDb, alliance_ids: list[int]) -> dict[int, 
     return dict(result)
 
 
-def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
-
-    Two alliances are co-present (same side) when their members appear as
-    co-attackers on the same killmails.  Uses ALL killmails, not just
-    battle-linked ones.
-    """
-    rows = db.fetch_all(
-        """
-        SELECT ka2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT ka1.sequence_id) AS shared_battles,
-               COUNT(DISTINCT ka2.character_id) AS shared_pilots
-        FROM killmail_attackers ka1
-        INNER JOIN killmail_attackers ka2
-             ON ka2.sequence_id = ka1.sequence_id
-            AND ka2.alliance_id <> ka1.alliance_id
-        INNER JOIN killmail_events ke
-             ON ke.sequence_id = ka1.sequence_id
-            AND ke.zkb_npc = 0
-        WHERE ka1.alliance_id = %s
-          AND ka2.alliance_id IS NOT NULL AND ka2.alliance_id > 0
-        GROUP BY ka2.alliance_id
-        HAVING shared_battles >= 2
-        ORDER BY shared_battles DESC
-        LIMIT 15
-        """,
-        (alliance_id,),
-    )
-    return [{"alliance_id": int(r["co_alliance_id"]), "shared_battles": int(r["shared_battles"]),
-             "shared_pilots": int(r["shared_pilots"]), "source": "sql"} for r in rows]
-
-
-def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances on opposing sides via killmail attacker/victim data.
-
-    An alliance is an enemy when our members attack their members (they are
-    victims) or their members attack ours.  Uses ALL killmails.
-    """
-    rows = db.fetch_all(
-        """
-        SELECT enemy_id, COUNT(DISTINCT killmail_id) AS engagements
-        FROM (
-            SELECT ke.victim_alliance_id AS enemy_id, ke.sequence_id AS killmail_id
-            FROM killmail_attackers ka
-            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-            WHERE ka.alliance_id = %s
-              AND ke.victim_alliance_id IS NOT NULL AND ke.victim_alliance_id > 0
-              AND ke.victim_alliance_id <> %s
-              AND ke.zkb_npc = 0
-            UNION
-            SELECT ka.alliance_id AS enemy_id, ke.sequence_id AS killmail_id
-            FROM killmail_events ke
-            INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
-            WHERE ke.victim_alliance_id = %s
-              AND ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
-              AND ka.alliance_id <> %s
-              AND ke.zkb_npc = 0
-        ) AS combined
-        GROUP BY enemy_id
-        HAVING engagements >= 2
-        ORDER BY engagements DESC
-        LIMIT 15
-        """,
-        (alliance_id, alliance_id, alliance_id, alliance_id),
-    )
-    return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
-             "source": "sql"} for r in rows]
-
-
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances whose members fight on the same side.
 
@@ -904,21 +838,13 @@ def run_compute_alliance_dossiers(
             })
 
             # Prefer pre-computed relationship graph (built from ALL killmails),
-            # then Neo4j, then raw SQL as final fallback.
+            # with Neo4j as the only per-alliance fallback.
             co_present = co_presence_bulk.get(aid, [])
             if not co_present:
                 co_present = _query_co_presence_neo4j(neo4j_client, aid)
-            if not co_present:
-                co_present = _query_co_presence_sql(db, aid)
-                if co_present:
-                    logger.info("alliance %d: co-presence from SQL fallback (%d results)", aid, len(co_present))
             enemies = enemies_bulk.get(aid, [])
             if not enemies:
                 enemies = _query_enemies_neo4j(neo4j_client, aid)
-            if not enemies:
-                enemies = _query_enemies_sql(db, aid)
-                if enemies:
-                    logger.info("alliance %d: enemies from SQL fallback (%d results)", aid, len(enemies))
 
             # Deduplicate: if an alliance appears in both co-present and
             # enemies, keep it only in the list where the count is higher.

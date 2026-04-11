@@ -457,29 +457,33 @@ def _materialize_tier(
     refreshed_at: str,
 ) -> int:
     """Atomically replace a tier's rows in `bloom_entry_points_materialized`."""
+    insert_params = [
+        (
+            tier,
+            rank,
+            row["entity_ref_type"],
+            row["entity_ref_id"],
+            row.get("entity_name"),
+            row.get("score"),
+            json_dumps_safe(row.get("detail") or {}),
+            refreshed_at,
+        )
+        for rank, row in enumerate(rows, start=1)
+    ]
     with db.transaction() as (_, cursor):
         cursor.execute(
             "DELETE FROM bloom_entry_points_materialized WHERE tier = %s",
             (tier,),
         )
-        for rank, row in enumerate(rows, start=1):
-            cursor.execute(
+        if insert_params:
+            cursor.executemany(
                 """
                 INSERT INTO bloom_entry_points_materialized (
                     tier, rank_in_tier, entity_ref_type, entity_ref_id,
                     entity_name, score, detail_json, refreshed_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (
-                    tier,
-                    rank,
-                    row["entity_ref_type"],
-                    row["entity_ref_id"],
-                    row.get("entity_name"),
-                    row.get("score"),
-                    json_dumps_safe(row.get("detail") or {}),
-                    refreshed_at,
-                ),
+                insert_params,
             )
     return len(rows)
 
