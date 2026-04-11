@@ -34,6 +34,12 @@ from typing import Any
 
 from .config import load_php_runtime_config, resolve_app_root
 from .db import SupplyCoreDb
+from .display_tiers import (
+    describe_tier_slots,
+    get_display_tier,
+    parse_tier_slots,
+    tier_capacity_allows,
+)
 from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
@@ -378,6 +384,7 @@ def _run_cycle_dependency_aware(
     shutdown_event: threading.Event,
     lane: str = "",
     memory_abort_bytes: int | None = None,
+    reserved_tier_slots: dict[int, int] | None = None,
 ) -> list[JobOutcome]:
     """Run all due jobs respecting dependencies but without tier barriers.
 
@@ -387,10 +394,18 @@ def _run_cycle_dependency_aware(
 
     Concurrency groups are respected via per-group locks so that jobs
     sharing a physical resource still serialise.
+
+    ``reserved_tier_slots`` (optional) lets operators guarantee a minimum
+    share of worker slots per display tier (T1–T6).  When set, jobs from
+    over-saturated non-reserved tiers are held back at the dispatcher so a
+    flood of one tier can't starve the others.  See
+    ``orchestrator.display_tiers.tier_capacity_allows`` for the algorithm.
     """
     all_outcomes: list[JobOutcome] = []
     if not due_keys or shutdown_event.is_set():
         return all_outcomes
+
+    reserved = reserved_tier_slots or {}
 
     # Build per-job dependency sets (only deps within this cycle's due jobs).
     deps: dict[str, set[str]] = {}
@@ -404,6 +419,9 @@ def _run_cycle_dependency_aware(
     completed: set[str] = set()
     remaining: set[str] = set(due_keys)
     in_flight: dict[Future, str] = {}
+    # Per-display-tier in-flight counter used for reservation enforcement.
+    # Only populated when ``reserved`` is non-empty.
+    in_flight_by_tier: dict[int, int] = defaultdict(int)
 
     # Per-concurrency-group locks to prevent overlapping execution.
     group_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
@@ -450,11 +468,46 @@ def _run_cycle_dependency_aware(
                 k for k in remaining if deps[k] <= completed
             ]
 
+            # When tier reservations are active, dispatch lower-tier work
+            # first (T1 ingestion → T6 maintenance) so reserved tiers can
+            # claim their guaranteed slots before non-reserved tiers eat
+            # the shared pool.  Secondary sort by job_key keeps dispatch
+            # deterministic for tests.
+            if reserved and ready:
+                ready.sort(key=lambda k: (get_display_tier(k), k))
+
+            held_back_by_tier_cap = 0
             for key in ready:
+                if not tier_capacity_allows(
+                    job_key=key,
+                    in_flight_by_tier=in_flight_by_tier,
+                    in_flight_total=len(in_flight),
+                    max_parallel=max_parallel,
+                    reserved_slots=reserved,
+                ):
+                    held_back_by_tier_cap += 1
+                    continue
                 remaining.discard(key)
                 fut = pool.submit(_run_with_group_lock, key)
                 fut.job_key = key  # type: ignore[attr-defined]
                 in_flight[fut] = key
+                if reserved:
+                    in_flight_by_tier[get_display_tier(key)] += 1
+
+            if reserved and held_back_by_tier_cap:
+                logger.info(
+                    f"{loop_name}: {held_back_by_tier_cap} job(s) held back "
+                    f"by tier capacity cap (in_flight={len(in_flight)}, "
+                    f"by_tier={dict(in_flight_by_tier)})",
+                    payload={
+                        "event": "loop_runner.tier_capacity_backpressure",
+                        "loop": loop_name,
+                        "held_back": held_back_by_tier_cap,
+                        "in_flight_total": len(in_flight),
+                        "in_flight_by_tier": dict(in_flight_by_tier),
+                        "reserved_tier_slots": dict(reserved),
+                    },
+                )
 
             if not in_flight:
                 if memory_aborted:
@@ -483,6 +536,9 @@ def _run_cycle_dependency_aware(
 
             for fut in done:
                 key = in_flight.pop(fut)
+                if reserved:
+                    tier = get_display_tier(key)
+                    in_flight_by_tier[tier] = max(0, in_flight_by_tier[tier] - 1)
                 try:
                     outcome = fut.result()
                     all_outcomes.append(outcome)
@@ -555,6 +611,7 @@ def _run_loop(
     lane: str = "",
     memory_abort_bytes: int | None = None,
     use_tier_barriers: bool = True,
+    reserved_tier_slots: dict[int, int] | None = None,
 ) -> None:
     """Run the loop continuously (or once)."""
     graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
@@ -676,6 +733,7 @@ def _run_loop(
                 shutdown_event=shutdown_event,
                 lane=lane,
                 memory_abort_bytes=memory_abort_bytes,
+                reserved_tier_slots=reserved_tier_slots,
             )
             for o in outcomes:
                 if o.status == "failed":
@@ -755,6 +813,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Use dependency-aware dispatch instead of tier barriers (better for background loops)")
     parser.add_argument("--lane", default=None,
                         help="Only run jobs in this lane (realtime/ingestion/compute/maintenance)")
+    parser.add_argument("--tier-slots", default="",
+                        help="Reserve a minimum share of worker slots per display tier "
+                             "(1–6). Format: 'tier:slots' pairs, comma-separated. "
+                             "Example: '1:2,3:2' reserves 2 slots each for Tier 1 "
+                             "(Data Ingestion) and Tier 3 (Graph). Non-reserved tiers "
+                             "share the remaining pool. Only applies with "
+                             "--no-tier-barriers. Total reserved must be < --max-parallel.")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args(argv)
 
@@ -822,6 +887,37 @@ def main(argv: list[str] | None = None) -> int:
     if lane and lane not in _VALID_LANES:
         logger.error(f"unknown lane '{lane}', valid lanes: {sorted(_VALID_LANES)}")
         return 1
+
+    # Parse optional tier-slot reservations.  Only meaningful with
+    # --no-tier-barriers (classic barrier mode is already tier-sequential),
+    # but we parse unconditionally so bad specs fail fast on startup.
+    try:
+        reserved_tier_slots = parse_tier_slots(args.tier_slots, args.max_parallel)
+    except ValueError as exc:
+        logger.error(
+            f"invalid --tier-slots: {exc}",
+            payload={"event": "loop_runner.tier_slots.invalid", "error": str(exc)},
+        )
+        return 1
+    if reserved_tier_slots and not args.no_tier_barriers:
+        logger.warning(
+            "--tier-slots has no effect without --no-tier-barriers "
+            "(barrier mode already runs tiers sequentially); ignoring",
+            payload={
+                "event": "loop_runner.tier_slots.ignored",
+                "reserved_tier_slots": reserved_tier_slots,
+            },
+        )
+        reserved_tier_slots = {}
+    if reserved_tier_slots:
+        logger.info(
+            describe_tier_slots(reserved_tier_slots, args.max_parallel),
+            payload={
+                "event": "loop_runner.tier_slots.active",
+                "reserved_tier_slots": reserved_tier_slots,
+                "max_parallel": args.max_parallel,
+            },
+        )
 
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/loop-runner-heartbeat.json"))
     # Per-lane state file so multiple lane processes don't overwrite each other.
@@ -903,7 +999,8 @@ def main(argv: list[str] | None = None) -> int:
                   args.max_parallel, shutdown_event, args.fast_pause, args.once),
             kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane,
                     "memory_abort_bytes": mem_abort,
-                    "use_tier_barriers": not no_tier_barriers},
+                    "use_tier_barriers": not no_tier_barriers,
+                    "reserved_tier_slots": reserved_tier_slots or None},
             name="fast-loop",
             daemon=True,
         )
@@ -916,7 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
                   args.max_parallel, shutdown_event, args.background_pause, args.once),
             kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane,
                     "memory_abort_bytes": mem_abort,
-                    "use_tier_barriers": not no_tier_barriers},
+                    "use_tier_barriers": not no_tier_barriers,
+                    "reserved_tier_slots": reserved_tier_slots or None},
             name="background-loop",
             daemon=True,
         )
