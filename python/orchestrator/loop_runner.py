@@ -1078,18 +1078,6 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         shutdown_event.set()
 
-    # Wait for loops to finish.
-    for t in threads:
-        t.join(timeout=30)
-
-    _write_state_file(state_file, {
-        "ts": utc_now_iso(),
-        "worker_id": worker_id,
-        "status": "stopped",
-    })
-
-    logger.info("loop runner stopped", payload={"event": "loop_runner.stopped", "worker_id": worker_id})
-
     # When shutting down on a signal (SIGTERM/SIGINT) or a memory-abort
     # request, the inner ThreadPoolExecutors used by run_tier() and
     # _run_cycle_dependency_aware() were torn down with
@@ -1104,13 +1092,43 @@ def main(argv: list[str] | None = None) -> int:
     # `Failed with result 'timeout'` / SIGKILL on the lane services
     # (#1001 lane-compute-bg, #1003 lane-compute).
     #
-    # Force-exit instead so systemd records a clean stop.  All per-job DB
-    # state was finalised by `_finalize_job` before this point and the JSON
-    # log handlers flush line-by-line, so nothing material is lost.  The
-    # `--once` path returns normally because shutdown_event stays unset
-    # there.
+    # The existing force-exit below (`os._exit(0)`) bypasses that atexit
+    # handler, but it only runs *after* the sequential `t.join(timeout=30)`
+    # loop finishes.  Neither run_tier()'s `as_completed(..., timeout=...)`
+    # nor _run_cycle_dependency_aware()'s dispatch loop wake on
+    # `shutdown_event`, so each lane thread typically burns its full 30s
+    # join budget before falling through.  Lane-ingestion runs *both* a
+    # fast-loop and a background-loop thread (no `--fast-only`), so the
+    # join burns up to 60s — add the 15s shutdown_event.wait() wakeup
+    # window and we are right at systemd's TimeoutStopSec=90s, which is
+    # how #1005 `supplycore-lane-ingestion.service: Failed with result
+    # 'timeout'` keeps recurring on hourly restart.
+    #
+    # Skip the join loop entirely on shutdown — per-job DB state was
+    # finalised by `_finalize_job` before this point and the JSON log
+    # handlers flush line-by-line, so nothing material is lost.  The
+    # `--once` path still joins normally because `shutdown_event` stays
+    # unset there.
     if shutdown_event.is_set():
+        _write_state_file(state_file, {
+            "ts": utc_now_iso(),
+            "worker_id": worker_id,
+            "status": "stopped",
+        })
+        logger.info("loop runner stopped", payload={"event": "loop_runner.stopped", "worker_id": worker_id})
         os._exit(0)
+
+    # Normal --once path: wait for loops to finish naturally.
+    for t in threads:
+        t.join(timeout=30)
+
+    _write_state_file(state_file, {
+        "ts": utc_now_iso(),
+        "worker_id": worker_id,
+        "status": "stopped",
+    })
+
+    logger.info("loop runner stopped", payload={"event": "loop_runner.stopped", "worker_id": worker_id})
 
     return 0
 
