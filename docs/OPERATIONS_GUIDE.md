@@ -596,6 +596,19 @@ itself advances monotonically forward.
 
 This is opt-in, gated, and fully reversible. Nothing ships enabled.
 
+**Schema sources of truth:**
+- `database/migrations/20260426_incremental_horizon.sql` — adds the
+  per-dataset horizon columns (`watermark_event_time`,
+  `backfill_complete`, `backfill_proposed_at`,
+  `backfill_proposed_reason`, `incremental_horizon_seconds`,
+  `repair_window_seconds`, `stall_cursor`, `stall_count`) and the
+  `idx_sync_state_horizon` / `idx_sync_state_backfill_proposed`
+  indexes used by the freshness report.
+- `database/migrations/20260510_horizon_auto_approve.sql` — adds the
+  `auto_approve_blocked` opt-out column so
+  `detect_backfill_complete` still proposes a dataset for review but
+  never auto-flips `backfill_complete` for the blocked ones.
+
 ### <a id="horizon-how-it-works"></a>How It Works
 
 The `sync_state` table carries per-dataset progress and policy:

@@ -248,6 +248,8 @@ High-impact indexes added in the migration:
 |---|---|---|
 | `killmail_events` | `(effective_killmail_at)` | Overview page ORDER BY, time-range filters |
 | `killmail_events` | `(mail_type, effective_killmail_at)` | Overview page mail_type filter |
+| `killmail_events` | `(mail_type, effective_killmail_at, sequence_id)` | Overview page `mail_type` filter + `(effective_killmail_at DESC, sequence_id DESC)` order-by in `db_killmail_overview_page()`. Covers the composite access pattern that caused `/killmail-intelligence` to time out during backload. Added in `database/migrations/20260410_killmail_overview_mailtype_effective.sql`. |
+| `killmail_attackers` | `(character_id)` | Temporal-behavior worker joins `killmail_attackers → killmail_events` to build per-character timestamp lists. Without this index the `WHERE character_id IS NOT NULL AND character_id > 0` filter full-scans the multi-million row attackers table. Added in `database/migrations/20260409_temporal_behavior_attacker_index.sql`. |
 | `killmail_events` | `(victim_alliance_id, effective_killmail_at)` | Alliance filter on overview |
 | `killmail_events` | `(victim_corporation_id, effective_killmail_at)` | Corp filter on overview |
 | `killmail_attackers` | `(sequence_id, final_blow, attacker_index)` | Correlated subquery for final_blow lookup |

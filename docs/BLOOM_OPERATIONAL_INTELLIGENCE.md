@@ -44,6 +44,7 @@ entry points — all of which are now shipped in this repository.
 | `setup/neo4j_bloom_entry_points.cypher`                 | Indexes backing the smart entry-point labels.                           |
 | `python/orchestrator/jobs/compute_bloom_entry_points.py`| Python worker that maintains the entry-point labels (batch, idempotent).|
 | `database/migrations/20260424_bloom_entry_points.sql`   | Registers the job on the Python scheduler (15 minute cadence).          |
+| `database/migrations/20260425_bloom_entry_points_materialized.sql` | Creates `bloom_entry_points_materialized`, the read-side MariaDB projection of the four tiers that backs the PHP dashboard Intelligence Anchors panel. Populated by the same `compute_bloom_entry_points` job. |
 
 Registration points covered:
 
@@ -51,6 +52,18 @@ Registration points covered:
 - `python/orchestrator/processor_registry.py` — dispatch
 - `python/orchestrator/worker_registry.py` — scheduling + deps
 - `src/functions.php` — authoritative job registry + dashboard grouping
+
+### Dual-surface rendering
+
+`compute_bloom_entry_points` writes to **two** sinks in a single run:
+
+1. **Neo4j** — additive labels (`:HotBattle`, `:HighRiskPilot`,
+   `:StrategicSystem`, `:HotAlliance`) for Bloom search phrases.
+2. **MariaDB** — ranked top-N rows per tier in
+   `bloom_entry_points_materialized` (see
+   `20260425_bloom_entry_points_materialized.sql`). The PHP dashboard
+   Intelligence Anchors panel reads directly from this table so the
+   operator cockpit stays decoupled from Neo4j HTTP latency.
 
 ---
 
