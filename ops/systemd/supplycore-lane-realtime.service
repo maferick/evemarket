@@ -15,7 +15,7 @@ Restart=always
 RestartSec=3
 KillSignal=SIGTERM
 TimeoutStopSec=90
-MemoryMax=6G
+MemoryMax=12G
 StandardOutput=journal
 StandardError=journal
 
