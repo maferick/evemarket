@@ -904,21 +904,18 @@ def run_compute_alliance_dossiers(
             })
 
             # Prefer pre-computed relationship graph (built from ALL killmails),
-            # then Neo4j, then raw SQL as final fallback.
+            # with Neo4j as the only per-alliance fallback. The old per-alliance
+            # raw-SQL fallback (_query_co_presence_sql/_query_enemies_sql) was
+            # dropped from this hot path because it re-runs a nested DISTINCT
+            # join against killmail_attackers/killmail_events for every alliance
+            # where the bulk path returned empty, which is the opposite of what
+            # we want under scheduler pressure.
             co_present = co_presence_bulk.get(aid, [])
             if not co_present:
                 co_present = _query_co_presence_neo4j(neo4j_client, aid)
-            if not co_present:
-                co_present = _query_co_presence_sql(db, aid)
-                if co_present:
-                    logger.info("alliance %d: co-presence from SQL fallback (%d results)", aid, len(co_present))
             enemies = enemies_bulk.get(aid, [])
             if not enemies:
                 enemies = _query_enemies_neo4j(neo4j_client, aid)
-            if not enemies:
-                enemies = _query_enemies_sql(db, aid)
-                if enemies:
-                    logger.info("alliance %d: enemies from SQL fallback (%d results)", aid, len(enemies))
 
             # Deduplicate: if an alliance appears in both co-present and
             # enemies, keep it only in the list where the count is higher.
