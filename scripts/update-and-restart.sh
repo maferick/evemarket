@@ -364,8 +364,8 @@ sync_systemd_units() {
 # Enable and start newly-installed core units after daemon-reload.
 #
 # discover_services() only picks up units that systemd already knows about,
-# so a newly-copied unit file (e.g. supplycore-lane-compute-bg.service on
-# a host that never had it) would otherwise be copied but never started.
+# so a newly-copied unit file (e.g. supplycore-lane-compute-graph.service on
+# a host that never had lane services) would otherwise be copied but never started.
 # This function runs `systemctl enable --now` for each fresh install, with
 # guards for opt-in timers and the lanes-vs-monolithic runner conflict.
 enable_new_core_units() {
