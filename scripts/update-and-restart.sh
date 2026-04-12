@@ -55,7 +55,9 @@ CORE_UNITS=(
   supplycore-lane-compute-behavioral.service
   supplycore-lane-compute-cip.service
   supplycore-lane-compute-misc.service
+  supplycore-lane-compute-spy.service
   supplycore-lane-maintenance.service
+  supplycore-esi-continuous.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
   supplycore-backfill-runner.service
@@ -388,6 +390,7 @@ enable_new_core_units() {
       supplycore-lane-compute-behavioral.service \
       supplycore-lane-compute-cip.service \
       supplycore-lane-compute-misc.service \
+      supplycore-lane-compute-spy.service \
       supplycore-lane-maintenance.service; do
     if systemctl is-active --quiet "${lane_svc}" 2>/dev/null \
         || systemctl is-enabled --quiet "${lane_svc}" 2>/dev/null; then

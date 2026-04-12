@@ -386,6 +386,10 @@ INSTALL_AI_WORKER=false
 if prompt_yes_no "Install the AI briefing worker (drains ai_jobs queue for theater/opposition AI)?" "Y"; then
   INSTALL_AI_WORKER=true
 fi
+INSTALL_ESI_CONTINUOUS=false
+if prompt_yes_no "Install the ESI continuous worker (drains character affiliation/metadata/enrichment queues)?" "Y"; then
+  INSTALL_ESI_CONTINUOUS=true
+fi
 
 # ===========================  Validation  =================================
 
@@ -502,6 +506,9 @@ fi
 if [[ ${INSTALL_AI_WORKER} == true ]]; then
   render_unit "${REPO_ROOT}/ops/systemd/supplycore-ai-worker.service" "${SYSTEMD_DIR}/supplycore-ai-worker.service"
 fi
+if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
+  render_unit "${REPO_ROOT}/ops/systemd/supplycore-esi-continuous.service" "${SYSTEMD_DIR}/supplycore-esi-continuous.service"
+fi
 
 # ===========================  Enable and start  ===========================
 
@@ -573,6 +580,10 @@ if [[ ${INSTALL_AI_WORKER} == true ]]; then
   services_to_enable+=("supplycore-ai-worker.service")
 fi
 
+if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
+  services_to_enable+=("supplycore-esi-continuous.service")
+fi
+
 start_services "${services_to_enable[@]}"
 
 # ===========================  Summary  ====================================
@@ -610,6 +621,9 @@ if [[ ${INSTALL_INFLUX} == true ]]; then
 fi
 if [[ ${INSTALL_AI_WORKER} == true ]]; then
   echo "  systemctl status supplycore-ai-worker.service"
+fi
+if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
+  echo "  systemctl status supplycore-esi-continuous.service"
 fi
 echo
 echo "Run any registered job manually:"
