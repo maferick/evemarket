@@ -1,35 +1,58 @@
 from __future__ import annotations
 
+import subprocess
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
 from ..bridge import PhpBridge
 from ..esi_client import EsiClient
 from ..esi_rate_limiter import shared_limiter
-from ..http_client import ipv4_opener
 from ..job_result import JobResult
 from ..worker_runtime import payload_checksum, resident_memory_bytes, utc_now_iso
 
 
 def _http_json(url: str, user_agent: str, timeout_seconds: int = 25) -> tuple[int, Any]:
-    request = urllib.request.Request(
+    """HTTP GET via curl, matching ZKillAdapter's strategy.
+
+    Uses ``curl -4`` because:
+      1. r2z2.zkillboard.com resolves AAAA but the host has no IPv6 connectivity.
+      2. Cloudflare (which fronts zKB) blocks custom User-Agent strings with 403.
+         We let curl use its default UA and pass our identity via ``Maintainer``.
+    """
+    cmd = [
+        "curl", "-4", "-s",
+        "-o", "-",
+        "-w", "\n%{http_code}",
+        "--compressed",
+        "--connect-timeout", str(min(timeout_seconds, 10)),
+        "--max-time", str(timeout_seconds),
+        "-H", f"Maintainer: {user_agent}",
+        "-H", "Accept: application/json",
         url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": user_agent,
-        },
-    )
+    ]
+
     try:
-        with ipv4_opener.open(request, timeout=timeout_seconds) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            payload = response.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as error:
-        status = int(error.code)
-        payload = error.read().decode("utf-8", errors="replace")
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"R2Z2 request failed: {error.reason}") from error
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds + 5,
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise RuntimeError(f"R2Z2 request failed: {error}") from error
+
+    raw = result.stdout or ""
+    last_nl = raw.rfind("\n")
+    if last_nl == -1:
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"R2Z2 request failed: curl exit={result.returncode} stderr={result.stderr.strip()!r}"
+            )
+        return 0, {}
+
+    payload = raw[:last_nl]
+    status_str = raw[last_nl + 1:].strip()
+    status = int(status_str) if status_str.isdigit() else 0
 
     import json
 
