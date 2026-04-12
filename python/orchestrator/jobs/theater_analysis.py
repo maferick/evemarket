@@ -1717,12 +1717,21 @@ def run_theater_analysis(
                 "third_party_count": side_resolution.get("total_third_party", 0),
             })
 
-        # Auto-lock theaters whose last battle ended > 1 hour ago.
-        # Locked theaters won't be re-analyzed on subsequent runs, saving
-        # resources.  The view snapshot is generated on first page load.
-        auto_lock_threshold = datetime.now(UTC) - timedelta(hours=1)
+        # Auto-lock theaters whose end_time is before the clustering lookback
+        # window.  Theaters inside the window must remain unlocked so that
+        # theater_clustering can re-cluster them as new battles arrive.
+        # Falls back to 48 hours if the setting is missing.
         auto_locked = 0
         if not dry_run:
+            lookback_row = db.fetch_all(
+                "SELECT setting_value FROM app_settings WHERE setting_key = 'theater_clustering_lookback_hours' LIMIT 1"
+            )
+            lookback_hours = int(lookback_row[0]["setting_value"]) if lookback_row else 48
+            if lookback_hours > 0:
+                auto_lock_threshold = datetime.now(UTC) - timedelta(hours=lookback_hours)
+            else:
+                # lookback disabled — fall back to conservative 1-hour threshold
+                auto_lock_threshold = datetime.now(UTC) - timedelta(hours=1)
             auto_lock_candidates = db.fetch_all(
                 """
                 SELECT theater_id, end_time
