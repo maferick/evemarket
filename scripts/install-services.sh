@@ -477,6 +477,7 @@ for lane_unit in \
     supplycore-lane-compute-behavioral.service \
     supplycore-lane-compute-cip.service \
     supplycore-lane-compute-misc.service \
+    supplycore-lane-compute-spy.service \
     supplycore-lane-maintenance.service; do
   render_unit "${REPO_ROOT}/ops/systemd/${lane_unit}" "${SYSTEMD_DIR}/${lane_unit}"
 done
@@ -515,6 +516,7 @@ if [[ ${RUNNER_MODE} == "lanes" ]]; then
     "supplycore-lane-compute-behavioral.service"
     "supplycore-lane-compute-cip.service"
     "supplycore-lane-compute-misc.service"
+    "supplycore-lane-compute-spy.service"
     "supplycore-lane-maintenance.service"
   )
   # Disable the monolithic runner if it was previously enabled.
@@ -544,6 +546,7 @@ else
       supplycore-lane-compute-behavioral.service \
       supplycore-lane-compute-cip.service \
       supplycore-lane-compute-misc.service \
+      supplycore-lane-compute-spy.service \
       supplycore-lane-maintenance.service; do
     if systemctl is-enabled "${lane_svc}" >/dev/null 2>&1; then
       echo "Disabling lane service ${lane_svc} (using monolithic runner)"
@@ -591,6 +594,7 @@ if [[ ${RUNNER_MODE} == "lanes" ]]; then
   echo "  systemctl status supplycore-lane-compute-behavioral.service"
   echo "  systemctl status supplycore-lane-compute-cip.service"
   echo "  systemctl status supplycore-lane-compute-misc.service"
+  echo "  systemctl status supplycore-lane-compute-spy.service"
   echo "  systemctl status supplycore-lane-maintenance.service"
 else
   echo "  systemctl status supplycore-loop-runner.service"

@@ -1001,6 +1001,7 @@ _VALID_LANES = {
     "compute-behavioral", # behavioral scoring, cohort, character pipeline
     "compute-cip",        # cip_* correlation/event pipeline
     "compute-misc",       # market/alliance/geo/AI/rollup catch-all
+    "compute-spy",        # spy detection platform (IR, rings, risk, shadow ML)
     "maintenance",
 }
 

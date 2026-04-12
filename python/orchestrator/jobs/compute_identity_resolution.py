@@ -79,15 +79,16 @@ def _generate_candidates(db: SupplyCoreDb, limit: int) -> dict[tuple[int, int], 
     """Return {(a, b): context_dict} with a < b always."""
     pairs: dict[tuple[int, int], dict[str, Any]] = {}
 
-    # Block 1: battle co-occurrence (≥ MIN_BATTLE_COOCCURRENCE shared battles)
+    # Block 1: battle co-occurrence via precomputed copresence edges
+    # Uses character_copresence_edges (populated by compute_copresence_edges)
+    # instead of an expensive self-join on battle_participants.
     rows = db.fetch_all(
         """
-        SELECT bp1.character_id AS a, bp2.character_id AS b, COUNT(*) AS n
-        FROM battle_participants bp1
-        JOIN battle_participants bp2
-          ON bp1.battle_id = bp2.battle_id
-         AND bp1.character_id < bp2.character_id
-        GROUP BY bp1.character_id, bp2.character_id
+        SELECT character_id_a AS a, character_id_b AS b,
+               SUM(event_count) AS n
+        FROM character_copresence_edges
+        WHERE event_type IN ('same_battle','same_side')
+        GROUP BY character_id_a, character_id_b
         HAVING n >= %s
         ORDER BY n DESC
         LIMIT %s
