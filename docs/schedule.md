@@ -173,10 +173,18 @@ Edit `python/orchestrator/worker_registry.py` and add an entry to `WORKER_JOB_DE
 
 **`concurrency_group`**
 Jobs in the same group never run at the same time. Use this to protect shared resources:
-- `"graph_neo4j"` — Neo4j write-heavy jobs
-- `"battle_compute"` — battle intelligence pipeline
-- `"market_backfill"` — historical ESI fetches
-- `""` — no restriction
+- `"graph_neo4j_write"` — Neo4j write-heavy jobs (graph sync, killmail edges, universe sync)
+- `"battle_rollup_write"` — battle rollup exclusive writes
+- `"market_backfill"` — historical ESI fetches (market + alliance)
+- `"evewho_api"` — EveWho API rate-limited jobs
+- `""` — no restriction (default)
+
+**Important:** Do not use concurrency groups for ordering — use `depends_on` instead.
+Concurrency groups are for *resource-level* mutual exclusion only (e.g. preventing
+concurrent Neo4j bulk writes). If DAG dependencies already enforce the correct
+execution order, adding a concurrency group is redundant and harmful — it serializes
+jobs that could run in parallel, inflating the tier timeout budget and potentially
+causing cascade timeouts.
 
 **`depends_on`**
 List of job keys that must have completed recently before this job can run. The scheduler builds a DAG and holds blocked jobs until all upstream dependencies finish.
