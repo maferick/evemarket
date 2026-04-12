@@ -38,6 +38,7 @@ from .supervisor import run_supervisor
 from .worker_pool import main as run_worker_pool
 from .zkill_worker import main as run_zkill_worker
 from .esi_continuous_worker import main as run_esi_continuous_worker
+from .zkb_repair_worker import main as run_zkb_repair_worker
 from .evewho_alliance_lookup_runner import main as run_evewho_alliance_runner
 from .killmail_backfill_runner import main as run_killmail_backfill_runner
 from .processor_registry import run_registered_processor, PYTHON_PROCESSOR_JOB_KEYS
@@ -89,6 +90,14 @@ def parse_args() -> argparse.Namespace:
     esi_continuous.add_argument("--memory-max-gb", type=float, default=2.0, help="Memory abort threshold in GiB (default: 2.0)")
     esi_continuous.add_argument("--once", action="store_true")
     esi_continuous.add_argument("--verbose", action="store_true")
+
+    zkb_repair = subparsers.add_parser("zkb-repair", help="Run killmail zKB repair in a continuous loop (outside the scheduler)")
+    zkb_repair.add_argument("--app-root", default=resolve_app_root(__file__))
+    zkb_repair.add_argument("--idle-sleep", type=float, default=30.0, help="Seconds to sleep between cycles (default: 30)")
+    zkb_repair.add_argument("--error-backoff", type=float, default=60.0, help="Seconds to sleep after error (default: 60)")
+    zkb_repair.add_argument("--memory-max-gb", type=float, default=1.0, help="Memory abort threshold in GiB (default: 1.0)")
+    zkb_repair.add_argument("--once", action="store_true")
+    zkb_repair.add_argument("--verbose", action="store_true")
 
     evewho_runner = subparsers.add_parser("evewho-alliance-runner", help="Run the dedicated continuous EveWho alliance lookup runner (uses half the API rate limit)")
     evewho_runner.add_argument("--app-root", default=resolve_app_root(__file__))
@@ -302,6 +311,15 @@ def main() -> int:
         ])
     if command == "esi-continuous":
         return run_esi_continuous_worker([
+            "--app-root", args.app_root,
+            "--idle-sleep", str(args.idle_sleep),
+            "--error-backoff", str(args.error_backoff),
+            "--memory-max-gb", str(args.memory_max_gb),
+            *( ["--once"] if args.once else [] ),
+            *( ["--verbose"] if args.verbose else [] ),
+        ])
+    if command == "zkb-repair":
+        return run_zkb_repair_worker([
             "--app-root", args.app_root,
             "--idle-sleep", str(args.idle_sleep),
             "--error-backoff", str(args.error_backoff),

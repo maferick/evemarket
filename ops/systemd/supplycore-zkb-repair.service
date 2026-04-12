@@ -1,0 +1,23 @@
+[Unit]
+Description=SupplyCore zKB repair worker (backfills missing zKillboard metadata for killmails)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py zkb-repair --app-root /var/www/SupplyCore --idle-sleep 30 --memory-max-gb 1.0
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=2G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
