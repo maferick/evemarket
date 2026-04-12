@@ -1473,6 +1473,100 @@ class SupplyCoreDb:
             (job_key[:120],),
         )
 
+    # ── Adaptive timeout tracking ────────────────────────────────────────
+
+    _ADAPTIVE_TIMEOUT_MAX = 14400  # 4 hours absolute ceiling
+
+    def update_duration_stats(self, job_key: str, duration_seconds: float, *, success: bool) -> int:
+        """Update rolling duration statistics after a job completes.
+
+        Uses an exponentially weighted moving average (EWMA) with a window
+        of ~20 samples so that recent behaviour dominates but outliers are
+        smoothed.  Only successful runs update the average; failures still
+        update the high-water mark and sample count.
+
+        The adaptive_timeout_seconds is recomputed as:
+            max(configured_timeout, last_duration * 2.0, avg_duration * 3.0)
+        capped at _ADAPTIVE_TIMEOUT_MAX.
+        """
+        if success:
+            return self.execute(
+                """UPDATE sync_schedules
+                   SET duration_avg_seconds = CASE
+                         WHEN COALESCE(duration_samples, 0) = 0 THEN %s
+                         ELSE (COALESCE(duration_avg_seconds, 0) * LEAST(COALESCE(duration_samples, 0), 20) + %s)
+                              / (LEAST(COALESCE(duration_samples, 0), 20) + 1)
+                       END,
+                       duration_max_seconds = GREATEST(COALESCE(duration_max_seconds, 0), %s),
+                       duration_samples = COALESCE(duration_samples, 0) + 1,
+                       consecutive_timeouts = 0,
+                       adaptive_timeout_seconds = LEAST(
+                         %s,
+                         GREATEST(
+                           COALESCE(timeout_seconds, 300),
+                           CAST(CEIL(%s * 2.0) AS UNSIGNED),
+                           CAST(CEIL(
+                             CASE
+                               WHEN COALESCE(duration_samples, 0) = 0 THEN %s
+                               ELSE (COALESCE(duration_avg_seconds, 0) * LEAST(COALESCE(duration_samples, 0), 20) + %s)
+                                    / (LEAST(COALESCE(duration_samples, 0), 20) + 1)
+                             END * 3.0
+                           ) AS UNSIGNED)
+                         )
+                       )
+                   WHERE job_key = %s AND execution_mode = 'python'""",
+                (
+                    duration_seconds, duration_seconds,  # avg EWMA
+                    duration_seconds,                     # max
+                    self._ADAPTIVE_TIMEOUT_MAX,           # cap
+                    duration_seconds,                     # last * 2.0
+                    duration_seconds, duration_seconds,   # avg * 3.0 (same EWMA inline)
+                    job_key[:120],
+                ),
+            )
+        else:
+            # Failure: update max and sample count, but don't pollute the average.
+            return self.execute(
+                """UPDATE sync_schedules
+                   SET duration_max_seconds = GREATEST(COALESCE(duration_max_seconds, 0), %s),
+                       duration_samples = COALESCE(duration_samples, 0) + 1
+                   WHERE job_key = %s AND execution_mode = 'python'""",
+                (duration_seconds, job_key[:120]),
+            )
+
+    def increment_consecutive_timeouts(self, job_key: str) -> int:
+        """Bump consecutive_timeouts counter (called when a job exceeds its watchdog)."""
+        return self.execute(
+            """UPDATE sync_schedules
+               SET consecutive_timeouts = COALESCE(consecutive_timeouts, 0) + 1
+               WHERE job_key = %s AND execution_mode = 'python'""",
+            (job_key[:120],),
+        )
+
+    def fetch_adaptive_timeouts(self, job_keys: list[str]) -> dict[str, int]:
+        """Batch-fetch adaptive timeouts for a set of job keys.
+
+        Returns {job_key: adaptive_timeout_seconds} for jobs that have
+        a recorded adaptive timeout.  Jobs without history are omitted
+        (caller should fall back to the static timeout_seconds).
+        """
+        if not job_keys:
+            return {}
+        placeholders = ", ".join(["%s"] * len(job_keys))
+        rows = self.fetch_all(
+            f"""SELECT job_key, adaptive_timeout_seconds
+                FROM sync_schedules
+                WHERE job_key IN ({placeholders})
+                  AND execution_mode = 'python'
+                  AND adaptive_timeout_seconds IS NOT NULL""",
+            tuple(k[:120] for k in job_keys),
+        )
+        return {
+            str(r["job_key"]): int(r["adaptive_timeout_seconds"])
+            for r in rows
+            if r.get("adaptive_timeout_seconds")
+        }
+
     def fetch_due_job_keys(self, job_keys: list[str]) -> set[str]:
         """Return the subset of *job_keys* whose ``next_due_at`` is in the past (or NULL).
 

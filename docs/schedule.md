@@ -180,7 +180,9 @@ Which execution lane (systemd service) runs this job:
 | `compute-battle` | Battle rollups, theater intelligence, suspicion scoring |
 | `compute-behavioral` | Behavioral scoring, cohort baselines, temporal detection |
 | `compute-cip` | Character Intelligence Profile correlation/event pipeline |
+| `compute-spy` | Spy detection platform (identity resolution, rings, risk, shadow ML) |
 | `compute-misc` | Alliance dossiers, market intelligence, map compute |
+| `continuous` | ESI lookup jobs managed by the dedicated ESI continuous worker daemon |
 | `maintenance` | Cleanup, repair, recalibration |
 
 **`freshness_sensitivity`**
@@ -303,6 +305,103 @@ SYNC_JOBS=(
 
 - `docs/AUTHORITATIVE_JOB_MATRIX.md` — add a row to the job matrix table
 - `docs/CLI_MANUAL.md` — add to the job reference table AND the numbered rebuild list
+
+---
+
+## Adaptive Timeout System
+
+The scheduler learns actual job durations and adjusts timeout budgets automatically.
+This prevents long-running jobs from being killed by static tier timeouts and endlessly retried.
+
+### How it works
+
+Each job tracks duration statistics in `sync_schedules`:
+
+| Column | Description |
+|--------|-------------|
+| `duration_avg_seconds` | Exponentially weighted moving average (EWMA, ~20 sample window) |
+| `duration_max_seconds` | Historical high-water mark |
+| `duration_samples` | Number of duration observations |
+| `adaptive_timeout_seconds` | Learned timeout: `GREATEST(configured, last*2.0, avg*3.0)`, capped at 4 hours |
+| `consecutive_timeouts` | Rolling count of timeout failures |
+
+On each successful run, the scheduler updates the EWMA and recomputes the adaptive timeout.
+The loop runner fetches adaptive timeouts at the start of each cycle and uses them instead
+of static `timeout_seconds` values from `WORKER_JOB_DEFINITIONS`.
+
+### Database migration
+
+Run `database/migrations/20260512_adaptive_scheduler_timeouts.sql` to add the tracking columns.
+
+---
+
+## Dependency-Aware Dispatch (`--no-tier-barriers`)
+
+By default, the loop runner groups jobs into tiers and enforces a hard timeout per tier
+using `as_completed(timeout=tier_timeout)`. This is appropriate for realtime and ingestion
+lanes where jobs are fast and predictable.
+
+For compute lanes where jobs can take minutes to hours, the `--no-tier-barriers` flag
+switches to dependency-aware dispatch:
+
+- Jobs run to completion — there is no tier timeout
+- Only the memory gate can prevent new job dispatch
+- The DAG dependency order is still respected
+- Concurrency groups are still enforced
+
+All compute lane systemd services use `--no-tier-barriers`:
+- `supplycore-lane-compute-battle.service`
+- `supplycore-lane-compute-behavioral.service`
+- `supplycore-lane-compute-graph.service`
+- `supplycore-lane-compute-cip.service`
+- `supplycore-lane-compute-spy.service`
+- `supplycore-lane-compute-misc.service`
+
+### Adaptive pool expansion
+
+When a job exceeds 2x its expected duration and other jobs are ready to run, the
+thread pool temporarily grows by 1 slot so that the slow job doesn't block the lane.
+The extra slot is reclaimed when the slow job finishes.
+
+---
+
+## ESI Continuous Worker
+
+Four ESI lookup jobs have large backlogs (700k+ characters) and need to drain
+continuously rather than waiting for scheduler intervals. These run in a dedicated
+daemon process outside the scheduler:
+
+```
+supplycore-esi-continuous.service
+├── esi_character_queue_sync       — queue newly seen characters for ESI lookup
+├── esi_affiliation_sync           — fetch character → alliance/corp affiliations
+├── entity_metadata_resolve_sync   — resolve entity IDs to names
+└── evewho_enrichment_sync         — enrich characters via EveWho API
+```
+
+### Behavior
+
+- Jobs run in sequence in a tight loop
+- If any job returns `has_more=True`, the loop continues immediately
+- Otherwise, it sleeps briefly (`--idle-sleep`, default 5s)
+- On error, it backs off (`--error-backoff`, default 10s)
+- Memory gate aborts the process for systemd restart if RSS exceeds `--memory-max-gb`
+
+### Configuration
+
+These jobs use `lane: "continuous"` in `worker_registry.py`. The loop runner
+recognizes this lane but never dispatches these jobs — they are managed exclusively
+by the ESI continuous worker.
+
+### Running
+
+```bash
+# Managed by systemd
+sudo systemctl enable --now supplycore-esi-continuous.service
+
+# Manual / debugging
+python bin/python_orchestrator.py esi-continuous --app-root /var/www/SupplyCore --once
+```
 
 ---
 

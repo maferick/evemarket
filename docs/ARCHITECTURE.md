@@ -170,26 +170,38 @@ EveWho ──────────► Adapters ──────────
 
 ```
 systemd (lane-based execution model)
-├── supplycore-lane-realtime.service      ─► Latency-sensitive syncs, dashboards, alerts (15 jobs)
-├── supplycore-lane-ingestion.service     ─► ESI/EveWho API-bound syncs (7 jobs)
-├── supplycore-lane-compute.service       ─► Heavy graph, battle, theater compute (52 jobs)
-├── supplycore-lane-maintenance.service   ─► Cleanup, repair, recalibration (4 jobs)
-├── supplycore-zkill.service              ─► Dedicated zKill stream worker
-├── supplycore-evewho-runner.service      ─► Dedicated EveWho alliance lookup runner
-└── supplycore-influx-rollup-export.timer ─► Scheduled InfluxDB export
+├── supplycore-lane-realtime.service          ─► Latency-sensitive syncs, dashboards, alerts
+├── supplycore-lane-ingestion.service         ─► ESI/EveWho API-bound syncs
+├── supplycore-lane-compute-graph.service     ─► Neo4j graph analytics pipeline
+├── supplycore-lane-compute-battle.service    ─► Battle rollups, theater, suspicion scoring
+├── supplycore-lane-compute-behavioral.service─► Behavioral scoring, cohort baselines
+├── supplycore-lane-compute-cip.service       ─► Character Intelligence Profile pipeline
+├── supplycore-lane-compute-spy.service       ─► Spy detection (identity resolution, rings, shadow ML)
+├── supplycore-lane-compute-misc.service      ─► Alliance dossiers, market intel, map compute
+├── supplycore-lane-maintenance.service       ─► Cleanup, repair, recalibration
+├── supplycore-esi-continuous.service         ─► Continuous ESI lookup daemon (outside scheduler)
+├── supplycore-zkill.service                  ─► Dedicated zKill stream worker
+├── supplycore-evewho-runner.service          ─► Dedicated EveWho alliance lookup runner
+└── supplycore-influx-rollup-export.timer     ─► Scheduled InfluxDB export
 
-Fallback: supplycore-loop-runner.service  ─► All jobs in one process (monolithic)
+Fallback: supplycore-loop-runner.service      ─► All jobs in one process (monolithic)
 ```
 
 ### Execution Lanes
 
-| Lane | Jobs | Profile |
-|------|------|---------|
-| **realtime** | 15 | Short (<15s), user-facing freshness — market syncs, dashboards, alerts, sovereignty |
-| **ingestion** | 7 | API/ESI-bound, rate-limited — entity resolution, EveWho, corp standings |
-| **compute** | 52 | Heavy DB/graph/battle — rollups, theater, graph pipelines, historical syncs |
-| **maintenance** | 4 | Low-priority cleanup — cache expiry, repair, audit, recalibration |
-| **zKill** | dedicated | Always-on R2Z2 killmail stream ingestion |
+| Lane | Profile |
+|------|---------|
+| **realtime** | Short (<15s), user-facing freshness — market syncs, dashboards, alerts, sovereignty |
+| **ingestion** | API/ESI-bound, rate-limited — entity resolution, EveWho, corp standings |
+| **compute-graph** | Neo4j graph analytics — sync, topology, community, motifs, evidence paths |
+| **compute-battle** | Battle rollups, theater intelligence, suspicion scoring |
+| **compute-behavioral** | Behavioral scoring, cohort baselines, temporal detection |
+| **compute-cip** | Character Intelligence Profile correlation/event pipeline |
+| **compute-spy** | Spy detection platform — identity resolution, spy rings, risk profiles, shadow ML |
+| **compute-misc** | Alliance dossiers, market intelligence, map compute |
+| **continuous** | ESI lookup jobs managed by dedicated continuous worker daemon |
+| **maintenance** | Low-priority cleanup — cache expiry, repair, audit, recalibration |
+| **zKill** | Always-on R2Z2 killmail stream ingestion (dedicated worker) |
 
 ### Job Execution Model
 
@@ -199,6 +211,9 @@ Fallback: supplycore-loop-runner.service  ─► All jobs in one process (monoli
 4. Dispatch due jobs tier-by-tier, respecting concurrency groups
 5. Cross-lane dependencies are stripped (best-effort temporal separation)
 6. Realtime lane warns when jobs exceed 15s runtime threshold
+7. Compute lanes use `--no-tier-barriers` for dependency-aware dispatch (no hard tier timeout)
+8. Adaptive timeout tracking learns actual job durations and adjusts budgets via EWMA
+9. ESI continuous jobs run outside the scheduler in a tight-loop daemon (`esi-continuous`)
 
 ---
 

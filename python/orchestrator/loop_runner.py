@@ -127,6 +127,9 @@ def _run_single_job(
                 duration_seconds=elapsed,
             )
             db.update_effective_interval(job_key)
+            # Adaptive tracking: record actual duration and recompute
+            # adaptive timeout so the scheduler learns from reality.
+            db.update_duration_stats(job_key, elapsed, success=(status == "success"))
             if result.get("has_more"):
                 db.advance_next_due_at(job_key)
             else:
@@ -157,6 +160,7 @@ def _run_single_job(
                 duration_seconds=elapsed,
             )
             db.update_effective_interval(job_key)
+            db.update_duration_stats(job_key, elapsed, success=False)
             db.advance_next_due_at_by_interval(job_key)
         except Exception:
             pass
@@ -228,11 +232,27 @@ def _run_concurrency_group(
     return outcomes
 
 
+def _resolve_job_timeout(
+    job_key: str,
+    definitions: dict[str, dict[str, Any]],
+    adaptive_overrides: dict[str, int] | None = None,
+) -> int:
+    """Return the effective timeout for a single job.
+
+    Prefers the adaptive timeout (learned from actual durations) over
+    the static timeout_seconds from the worker registry.
+    """
+    if adaptive_overrides and job_key in adaptive_overrides:
+        return adaptive_overrides[job_key]
+    return int(definitions.get(job_key, {}).get("timeout_seconds", 300))
+
+
 def _tier_timeout_seconds(
     tier_jobs: list[str],
     definitions: dict[str, dict[str, Any]],
     groups: dict[str, list[str]],
     max_parallel: int = 1,
+    adaptive_overrides: dict[str, int] | None = None,
 ) -> int:
     """Compute the maximum wall-clock time a tier should be allowed to run.
 
@@ -252,18 +272,20 @@ def _tier_timeout_seconds(
         of the work is distributed across the available slots.
 
     Finally, a 2-minute buffer is added for thread startup, DB
-    connection overhead, etc.  Prior to this fix the formula assumed
-    unbounded parallelism (``max(units) + 120``), which silently
-    starved ``--max-parallel 1`` deployments where multiple heavy jobs
-    share a tier.
+    connection overhead, etc.
+
+    When ``adaptive_overrides`` is provided (from DB duration history),
+    the adaptive timeout is used instead of the static timeout_seconds,
+    giving jobs that consistently need more time a bigger budget
+    automatically.
     """
     independent_units = [
-        int(definitions.get(jk, {}).get("timeout_seconds", 300))
+        _resolve_job_timeout(jk, definitions, adaptive_overrides)
         for jk in tier_jobs
         if not any(jk in g for g in groups.values())
     ]
     group_units = [
-        sum(int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in gj)
+        sum(_resolve_job_timeout(jk, definitions, adaptive_overrides) for jk in gj)
         for gj in groups.values()
     ]
     units = independent_units + group_units
@@ -303,6 +325,7 @@ def run_tier(
     max_parallel: int,
     shutdown_event: threading.Event,
     lane: str = "",
+    adaptive_overrides: dict[str, int] | None = None,
 ) -> list[JobOutcome]:
     """Run all jobs in a single tier, respecting concurrency groups.
 
@@ -313,12 +336,15 @@ def run_tier(
     A tier-level timeout prevents a single hung job from blocking all
     downstream tiers indefinitely.  Timed-out threads continue running in
     the background but the scheduler advances to the next tier.
+
+    When ``adaptive_overrides`` is provided, the tier budget uses learned
+    timeouts from actual job durations instead of static registry values.
     """
     if not tier_jobs or shutdown_event.is_set():
         return []
 
     independent, groups = _split_tier_by_concurrency(tier_jobs, graph_nodes)
-    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups, max_parallel)
+    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups, max_parallel, adaptive_overrides)
 
     logger.info(
         f"tier {tier_index}: {len(tier_jobs)} jobs "
@@ -442,6 +468,7 @@ def _run_cycle_dependency_aware(
     lane: str = "",
     memory_abort_bytes: int | None = None,
     reserved_tier_slots: dict[int, int] | None = None,
+    adaptive_overrides: dict[str, int] | None = None,
 ) -> list[JobOutcome]:
     """Run all due jobs respecting dependencies but without tier barriers.
 
@@ -457,12 +484,26 @@ def _run_cycle_dependency_aware(
     over-saturated non-reserved tiers are held back at the dispatcher so a
     flood of one tier can't starve the others.  See
     ``orchestrator.display_tiers.tier_capacity_allows`` for the algorithm.
+
+    **Adaptive behaviour** (when ``adaptive_overrides`` is provided):
+
+      * **Watchdog timeout**: if a job runs longer than its adaptive
+        timeout, a warning is logged.  The job is NOT killed — it is
+        allowed to finish.  Only at the absolute hard ceiling
+        (``_ADAPTIVE_HARD_CEILING_SECONDS``) is a job considered truly
+        stuck and skipped on the *next* cycle.
+      * **Adaptive pool expansion**: when any in-flight job exceeds 2×
+        its expected duration and there are ready jobs waiting, the pool
+        temporarily grows by one worker so the slow job doesn't starve
+        the rest of the lane.  The extra slot is reclaimed when the slow
+        job finishes.
     """
     all_outcomes: list[JobOutcome] = []
     if not due_keys or shutdown_event.is_set():
         return all_outcomes
 
     reserved = reserved_tier_slots or {}
+    adaptive = adaptive_overrides or {}
 
     # Build per-job dependency sets (only deps within this cycle's due jobs).
     deps: dict[str, set[str]] = {}
@@ -476,6 +517,7 @@ def _run_cycle_dependency_aware(
     completed: set[str] = set()
     remaining: set[str] = set(due_keys)
     in_flight: dict[Future, str] = {}
+    in_flight_started: dict[str, float] = {}  # job_key -> monotonic start time
     # Per-display-tier in-flight counter used for reservation enforcement.
     # Only populated when ``reserved`` is non-empty.
     in_flight_by_tier: dict[int, int] = defaultdict(int)
@@ -483,18 +525,25 @@ def _run_cycle_dependency_aware(
     # Per-concurrency-group locks to prevent overlapping execution.
     group_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
 
+    # Adaptive pool expansion state.
+    base_max_parallel = max_parallel
+    expanded_slots = 0         # how many extra slots are currently active
+    watchdog_warned: set[str] = set()  # jobs we've already warned about
+
     def _run_with_group_lock(job_key: str) -> JobOutcome:
         cg = definitions.get(job_key, {}).get("concurrency_group") or ""
-        timeout = int(definitions.get(job_key, {}).get("timeout_seconds", 300))
+        timeout = _resolve_job_timeout(job_key, definitions, adaptive)
         if cg:
             with group_locks[cg]:
-                return _run_single_job(job_key, db, raw_config, logger, timeout)
-        return _run_single_job(job_key, db, raw_config, logger, timeout)
+                return _run_single_job(job_key, db, raw_config, logger, timeout, lane)
+        return _run_single_job(job_key, db, raw_config, logger, timeout, lane)
 
-    pool = ThreadPoolExecutor(max_workers=max_parallel)
+    pool = ThreadPoolExecutor(max_workers=max(max_parallel, 4))  # pre-size for expansion
     memory_aborted = False
     try:
         while (remaining or in_flight) and not shutdown_event.is_set():
+            now = time.monotonic()
+
             # Memory gate: with --no-tier-barriers the dispatcher will keep
             # feeding new jobs into the pool as soon as deps are satisfied,
             # so a single cycle can push RSS past the systemd MemoryMax
@@ -519,6 +568,52 @@ def _run_cycle_dependency_aware(
                         },
                     )
 
+            # ── Adaptive watchdog: warn on slow jobs, expand pool ────
+            for fut, jk in list(in_flight.items()):
+                started_at = in_flight_started.get(jk)
+                if started_at is None:
+                    continue
+                elapsed = now - started_at
+                expected = float(_resolve_job_timeout(jk, definitions, adaptive))
+
+                # Warn once when a job exceeds its adaptive timeout.
+                if elapsed > expected and jk not in watchdog_warned:
+                    watchdog_warned.add(jk)
+                    logger.warning(
+                        f"{loop_name}: job {jk} running for {elapsed:.0f}s "
+                        f"(expected ~{expected:.0f}s) — allowing to finish",
+                        payload={
+                            "event": "loop_runner.adaptive_watchdog",
+                            "loop": loop_name,
+                            "job_key": jk,
+                            "elapsed_seconds": round(elapsed, 1),
+                            "expected_seconds": round(expected, 1),
+                        },
+                    )
+
+                # Adaptive pool expansion: if a job is running >2x expected
+                # and there are ready jobs waiting, grow the pool so the
+                # slow job doesn't block the lane.
+                if elapsed > expected * 2.0 and expanded_slots == 0 and remaining:
+                    ready_count = sum(1 for k in remaining if deps[k] <= completed)
+                    if ready_count > 0:
+                        expanded_slots += 1
+                        max_parallel = base_max_parallel + expanded_slots
+                        logger.info(
+                            f"{loop_name}: expanding pool +1 (now {max_parallel}) — "
+                            f"{jk} at {elapsed:.0f}s/{expected:.0f}s, "
+                            f"{ready_count} job(s) waiting",
+                            payload={
+                                "event": "loop_runner.adaptive_pool_expand",
+                                "loop": loop_name,
+                                "slow_job": jk,
+                                "elapsed_seconds": round(elapsed, 1),
+                                "expected_seconds": round(expected, 1),
+                                "new_max_parallel": max_parallel,
+                                "ready_waiting": ready_count,
+                            },
+                        )
+
             # Find jobs whose deps are all satisfied — but don't dispatch
             # any more once we've tripped the memory gate.
             ready: list[str] = [] if memory_aborted else [
@@ -537,8 +632,11 @@ def _run_cycle_dependency_aware(
 
             held_back_by_tier_cap = 0
             for key in ready:
+                # Respect effective max_parallel (includes expansion).
+                if len(in_flight) >= max_parallel:
+                    break
                 is_high = str(definitions.get(key, {}).get("priority", "")).lower() == "high"
-                if max_parallel > 1 and not is_high:
+                if base_max_parallel > 1 and not is_high:
                     high_ready_waiting = any(
                         str(definitions.get(candidate, {}).get("priority", "")).lower() == "high"
                         for candidate in ready
@@ -563,6 +661,7 @@ def _run_cycle_dependency_aware(
                 fut = pool.submit(_run_with_group_lock, key)
                 fut.job_key = key  # type: ignore[attr-defined]
                 in_flight[fut] = key
+                in_flight_started[key] = time.monotonic()
                 if reserved:
                     in_flight_by_tier[get_display_tier(key)] += 1
 
@@ -600,21 +699,20 @@ def _run_cycle_dependency_aware(
                 break
 
             # Wait for at least one future to complete.  The timeout doubles
-            # as the mid-cycle memory-gate polling interval: when every
-            # in-flight job is long-running (e.g. compute-bg backfills that
-            # take minutes each) we still want to notice RSS creeping toward
-            # the systemd MemoryMax before the kernel OOM-kills us, so we
-            # loop back and re-check the gate on a short cadence instead of
-            # waiting up to a full minute for a job to finish (#1000).
+            # as the mid-cycle memory-gate polling interval and the adaptive
+            # watchdog polling interval: when every in-flight job is long-
+            # running we still want to notice RSS creeping toward the systemd
+            # MemoryMax and log watchdog warnings on a regular cadence.
             done, _ = wait(in_flight.keys(), return_when=FIRST_COMPLETED, timeout=5)
 
             if not done:
-                # Timeout on wait — just loop back to check shutdown_event
-                # and the mid-cycle memory gate.
+                # Timeout on wait — just loop back to check shutdown_event,
+                # memory gate, and adaptive watchdog.
                 continue
 
             for fut in done:
                 key = in_flight.pop(fut)
+                in_flight_started.pop(key, None)
                 if reserved:
                     tier = get_display_tier(key)
                     in_flight_by_tier[tier] = max(0, in_flight_by_tier[tier] - 1)
@@ -643,6 +741,21 @@ def _run_cycle_dependency_aware(
                 # Mark completed regardless of success/failure so dependents
                 # can proceed (they check their own data freshness).
                 completed.add(key)
+
+                # Reclaim expanded pool slots when the slow job finishes.
+                if expanded_slots > 0 and key in watchdog_warned:
+                    expanded_slots = max(0, expanded_slots - 1)
+                    max_parallel = base_max_parallel + expanded_slots
+                    logger.info(
+                        f"{loop_name}: reclaiming pool slot (now {max_parallel}) — "
+                        f"slow job {key} finished",
+                        payload={
+                            "event": "loop_runner.adaptive_pool_reclaim",
+                            "loop": loop_name,
+                            "finished_job": key,
+                            "new_max_parallel": max_parallel,
+                        },
+                    )
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
@@ -765,6 +878,13 @@ def _run_loop(
                 },
             )
 
+        # Load adaptive timeouts from DB so tier budgets and watchdogs
+        # use learned values instead of static registry defaults.
+        try:
+            adaptive_overrides = db.fetch_adaptive_timeouts(all_job_keys)
+        except Exception:
+            adaptive_overrides = {}
+
         if use_tier_barriers:
             # Classic mode: run tiers sequentially, wait for each tier to
             # complete before starting the next.
@@ -820,11 +940,12 @@ def _run_loop(
                     max_parallel=max_parallel,
                     shutdown_event=shutdown_event,
                     lane=lane,
+                    adaptive_overrides=adaptive_overrides,
                 )
 
                 for o in outcomes:
                     cycle_outcomes.append(o)
-                    tier_budget = max(1.0, _tier_timeout_seconds(tier_due, definitions, _split_tier_by_concurrency(tier_due, graph_nodes)[1], max_parallel))
+                    tier_budget = max(1.0, _tier_timeout_seconds(tier_due, definitions, _split_tier_by_concurrency(tier_due, graph_nodes)[1], max_parallel, adaptive_overrides))
                     o.hog_risk = o.duration_seconds > (tier_budget * 0.5)
                     if o.status == "failed":
                         total_failed += 1
@@ -851,10 +972,11 @@ def _run_loop(
                 lane=lane,
                 memory_abort_bytes=memory_abort_bytes,
                 reserved_tier_slots=reserved_tier_slots,
+                adaptive_overrides=adaptive_overrides,
             )
             for o in outcomes:
                 cycle_outcomes.append(o)
-                tier_budget = max(1.0, float(int(definitions.get(o.job_key, {}).get("timeout_seconds", 300))))
+                tier_budget = max(1.0, float(_resolve_job_timeout(o.job_key, definitions, adaptive_overrides)))
                 o.hog_risk = o.duration_seconds > (tier_budget * 0.5)
                 if o.status == "failed":
                     total_failed += 1
@@ -1003,6 +1125,7 @@ _VALID_LANES = {
     "compute-misc",       # market/alliance/geo/AI/rollup catch-all
     "compute-spy",        # spy detection platform (IR, rings, risk, shadow ML)
     "maintenance",
+    "continuous",         # jobs managed by dedicated daemon workers (esi-continuous, zkill)
 }
 
 
