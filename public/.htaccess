@@ -25,5 +25,6 @@ RewriteRule ^killmail-intelligence/?$ killmail-intelligence/index.php [L,QSA]
 RewriteRule ^killmail-intelligence/view/?$ killmail-intelligence/view.php [L,QSA]
 
 RewriteRule ^log-viewer/?$ log-viewer/index.php [L,QSA]
+RewriteRule ^log-viewer/file/?$ log-viewer/file.php [L,QSA]
 
 RewriteRule ^$ index.php [L,QSA]
