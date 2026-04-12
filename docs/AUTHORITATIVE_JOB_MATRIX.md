@@ -65,6 +65,8 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | compute_spy_feature_snapshots | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 2 — versioned per-character feature vectors for feature_set=spy_v1. |
 | build_spy_training_split | real_schedulable | yes | yes | no | yes | yes | yes |  | Spy detection Phase 2 — manual/low-cadence labeled split builder over analyst_feedback. |
 | compute_identity_resolution | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 3 — infer probable shared-operator / alt links between characters. |
+| graph_spy_ring_projection | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 4 — dedicated GDS projection for spy ring detection. |
+| compute_spy_network_cases | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 4 — spy network investigation cases with lifecycle. |
 | killmail_r2z2_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed through zKill adapter boundary. |
 
 ## Internal/helper/non-schedulable entries

@@ -36,6 +36,8 @@ from .jobs import (
     run_compute_spy_feature_snapshots,
     run_build_spy_training_split,
     run_compute_identity_resolution,
+    run_graph_spy_ring_projection,
+    run_compute_spy_network_cases,
     run_evewho_enrichment_sync,
     run_market_hub_current_sync,
     run_alliance_current_sync,
@@ -147,6 +149,8 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_spy_feature_snapshots",
     "build_spy_training_split",
     "compute_identity_resolution",
+    "graph_spy_ring_projection",
+    "compute_spy_network_cases",
     "intelligence_pipeline",
     "graph_data_quality_check",
     "graph_temporal_metrics_sync",
@@ -255,6 +259,9 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "build_spy_training_split": (run_build_spy_training_split, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     # Spy detection platform — Phase 3 (identity resolution)
     "compute_identity_resolution": (run_compute_identity_resolution, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 4 (ring case detection)
+    "graph_spy_ring_projection": (run_graph_spy_ring_projection, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "compute_spy_network_cases": (run_compute_spy_network_cases, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_behavioral_scoring": (run_compute_behavioral_scoring, lambda db, cfg: (db, battle_runtime(cfg))),
     # Opposition daily intelligence
     "compute_opposition_daily_snapshots": (run_compute_opposition_daily_snapshots, lambda db, cfg: (db,)),
