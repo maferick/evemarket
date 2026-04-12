@@ -1217,6 +1217,21 @@ class SupplyCoreDb:
         ui_sections_json: str | None = None,
         section_versions_json: str | None = None,
     ) -> int:
+        # Include a UTC timestamp in event_key so each job finish creates a
+        # new row. Without this, the UNIQUE constraint on event_key (see
+        # ``uniq_ui_refresh_event_key`` in src/db.php) collapses every
+        # subsequent run of the same job into an UPDATE of the first row —
+        # and because the ON DUPLICATE KEY UPDATE clause below does not
+        # touch ``finished_at``, ``MAX(finished_at)`` (which drives the Log
+        # Viewer's "Live refresh · X ago" indicator and the
+        # ``db_ui_refresh_events_after`` SSE stream used for dashboard
+        # auto-refresh) would freeze the moment every job had run once
+        # under the Python loop-runner. The format matches
+        # ``supplycore_ui_refresh_publish_for_job_result`` in
+        # src/functions.php so both execution paths produce compatible
+        # rows. ``finished_at=VALUES(finished_at)`` is kept as belt-and-
+        # braces for the rare same-second collision case.
+        event_key = f"{job_key}:{job_status}:{time.strftime('%Y%m%d%H%M%S', time.gmtime())}"
         return self.insert(
             """INSERT INTO ui_refresh_events (
                     event_type, event_key, job_key, job_status, finished_at,
@@ -1227,9 +1242,11 @@ class SupplyCoreDb:
                 ON DUPLICATE KEY UPDATE
                     updated_at=CURRENT_TIMESTAMP,
                     id=LAST_INSERT_ID(id),
+                    finished_at=VALUES(finished_at),
+                    job_status=VALUES(job_status),
                     section_versions_json=COALESCE(VALUES(section_versions_json), section_versions_json)""",
             (
-                f"worker_pool:{job_key}"[:190],
+                event_key[:190],
                 job_key[:190],
                 job_status[:40],
                 domains_json,
@@ -1348,6 +1365,114 @@ class SupplyCoreDb:
             (status[:20], status[:20], duration_seconds, job_key[:120]),
         )
 
+    def ensure_scheduler_management_columns(self) -> None:
+        """Ensure scheduler-management columns exist on sync_schedules."""
+        required_columns = {
+            "auto_managed": "ALTER TABLE sync_schedules ADD COLUMN auto_managed TINYINT(1) NOT NULL DEFAULT 1 AFTER enabled",
+            "effective_interval_seconds": "ALTER TABLE sync_schedules ADD COLUMN effective_interval_seconds INT UNSIGNED NOT NULL DEFAULT 60 AFTER interval_seconds",
+        }
+        for column_name, ddl in required_columns.items():
+            row = self.fetch_one(
+                """SELECT COUNT(*) AS c
+                   FROM INFORMATION_SCHEMA.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'sync_schedules'
+                     AND COLUMN_NAME = %s""",
+                (column_name,),
+            )
+            exists = int(row["c"]) > 0 if row else False
+            if not exists:
+                self.execute(ddl)
+
+    def upsert_schedule_from_registry(self, job_key: str, definition: dict[str, Any]) -> bool:
+        """Upsert one sync_schedules row from worker_registry defaults.
+
+        Returns True when the row was newly inserted.
+        """
+        interval = max(1, int(definition.get("cooldown_seconds", 60)))
+        timeout = max(30, int(definition.get("timeout_seconds", 300)))
+        priority = str(definition.get("priority", "normal"))[:20]
+        inserted = self.execute(
+            """INSERT IGNORE INTO sync_schedules (
+                    job_key, enabled, auto_managed, interval_seconds,
+                    effective_interval_seconds, next_due_at, execution_mode,
+                    timeout_seconds, priority, discovered_from_code,
+                    explicitly_configured, current_state
+               ) VALUES (
+                    %s, 1, 1, %s, %s, UTC_TIMESTAMP(), 'python',
+                    %s, %s, 1, 0, 'waiting'
+               )""",
+            (job_key[:120], interval, interval, timeout, priority),
+        )
+        self.execute(
+            """UPDATE sync_schedules
+               SET interval_seconds = %s,
+                   effective_interval_seconds = GREATEST(1, COALESCE(effective_interval_seconds, interval_seconds, %s)),
+                   timeout_seconds = %s,
+                   execution_mode = 'python',
+                   priority = %s,
+                   discovered_from_code = 1
+               WHERE job_key = %s""",
+            (interval, interval, timeout, priority, job_key[:120]),
+        )
+        return inserted > 0
+
+    def ensure_schedule_rows_from_registry(
+        self,
+        definitions: dict[str, dict[str, Any]],
+        bound_processor_keys: set[str],
+    ) -> dict[str, int]:
+        """Ensure sync_schedules has rows for every worker registry job."""
+        self.ensure_scheduler_management_columns()
+        created = 0
+        for job_key, definition in definitions.items():
+            if self.upsert_schedule_from_registry(job_key, definition):
+                created += 1
+        # Auto-enable only runner-managed rows.
+        auto_enabled = self.execute(
+            """UPDATE sync_schedules
+               SET enabled = 1
+               WHERE execution_mode = 'python'
+                 AND auto_managed = 1
+                 AND enabled = 0"""
+        )
+        rows = self.fetch_all(
+            """SELECT job_key, enabled, auto_managed
+               FROM sync_schedules
+               WHERE execution_mode = 'python'"""
+        )
+        registry_keys = set(definitions.keys())
+        row_map = {str(r["job_key"]): r for r in rows if str(r.get("job_key") or "")}
+        enabled_count = sum(1 for k in registry_keys if int(row_map.get(k, {}).get("enabled") or 0) == 1)
+        disabled_by_operator = sum(
+            1
+            for k in registry_keys
+            if k in row_map and int(row_map[k].get("enabled") or 0) == 0 and int(row_map[k].get("auto_managed") or 1) == 0
+        )
+        missing_processors = sum(1 for k in registry_keys if k not in bound_processor_keys)
+        return {
+            "registered": len(registry_keys),
+            "created": created,
+            "enabled": enabled_count,
+            "disabled_by_operator": disabled_by_operator,
+            "missing_processors": missing_processors,
+            "auto_enabled": int(auto_enabled),
+        }
+
+    def update_effective_interval(self, job_key: str) -> int:
+        """Recompute effective_interval_seconds = max(interval, last_duration*1.2)."""
+        return self.execute(
+            """UPDATE sync_schedules
+               SET effective_interval_seconds = GREATEST(
+                     1,
+                     interval_seconds,
+                     CAST(CEIL(COALESCE(last_duration_seconds, 0) * 1.2) AS UNSIGNED)
+                   )
+               WHERE job_key = %s
+                 AND execution_mode = 'python'""",
+            (job_key[:120],),
+        )
+
     def fetch_due_job_keys(self, job_keys: list[str]) -> set[str]:
         """Return the subset of *job_keys* whose ``next_due_at`` is in the past (or NULL).
 
@@ -1384,7 +1509,7 @@ class SupplyCoreDb:
         won't re-run it before the scheduled interval has elapsed.
         """
         return self.execute(
-            "UPDATE sync_schedules SET next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL interval_seconds SECOND) WHERE job_key = %s AND execution_mode = 'python'",
+            "UPDATE sync_schedules SET next_due_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL GREATEST(1, COALESCE(effective_interval_seconds, interval_seconds)) SECOND) WHERE job_key = %s AND execution_mode = 'python'",
             (job_key[:120],),
         )
 

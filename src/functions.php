@@ -4658,6 +4658,17 @@ function supplycore_authoritative_job_registry(): array
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'description' => 'Roll up analytics into daily buckets.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'deal_alerts_sync' => ['label' => 'Deal Alerts', 'description' => 'Refresh deal alert materialization.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'compute_signals' => ['label' => 'Compute Signals', 'description' => 'Compute market signal features.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
+        'compute_map_intelligence' => ['label' => 'Map Intelligence', 'description' => 'Precompute chokepoints, system centrality, and edge risk intelligence.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'compute_opposition_daily_snapshots' => ['label' => 'Opposition Daily Snapshots', 'description' => 'Daily alliance-opposition snapshot materialization for analyst workflows.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'character_pipeline_worker' => ['label' => 'Character Pipeline Worker', 'description' => 'Batch character intelligence pipeline executor.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'seed_signal_definitions' => ['label' => 'Seed Signal Definitions', 'description' => 'Bootstrap CIP signal definition catalog.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'low', 'timeout_seconds' => 120, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_signal_emitter' => ['label' => 'CIP Signal Emitter', 'description' => 'Emit normalized character intelligence signals into CIP.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_fusion' => ['label' => 'CIP Fusion', 'description' => 'Fuse emitted signals into profile-level intelligence artifacts.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_event_engine' => ['label' => 'CIP Event Engine', 'description' => 'Build CIP events from fused profiles and compound signals.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 10, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_event_digest' => ['label' => 'CIP Event Digest', 'description' => 'Generate digest summaries for CIP analyst review.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'low', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_compound_evaluator' => ['label' => 'CIP Compound Evaluator', 'description' => 'Evaluate compound CIP signals and thresholds.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_compound_analytics' => ['label' => 'CIP Compound Analytics', 'description' => 'Persist CIP compound metrics snapshots.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'low', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
+        'cip_calibration' => ['label' => 'CIP Calibration', 'description' => 'Calibrate CIP scoring thresholds from recent profile data.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
 
         // External integration.
         'killmail_r2z2_sync' => ['label' => 'Killmail R2Z2 Stream', 'description' => 'Dedicated zKill ingestion worker via adapter boundary.', 'category' => 'external_integrated', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1, 'default_offset_minutes' => 0, 'priority' => 'high', 'timeout_seconds' => 180, 'concurrency_policy' => 'dedicated_worker', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'external_adapter' => 'zkill_r2z2_adapter', 'notes' => 'Handled by dedicated zKill worker service.'],
@@ -25803,6 +25814,22 @@ function log_viewer_page_data(): array
             }
         }
 
+        // Compute last-run duration from cs.last_started_at / last_finished_at.
+        // If the job is still running (no finished_at), show elapsed time so far.
+        // If no start timestamp at all, null — template will render "-".
+        $lastDurationSeconds = null;
+        $lastStartedAt = $s['last_started_at'] ?? null;
+        $lastFinishedAt = $s['last_finished_at'] ?? null;
+        if ($lastStartedAt !== null) {
+            $startTs = strtotime((string) $lastStartedAt);
+            if ($startTs !== false) {
+                $endTs = $lastFinishedAt !== null ? strtotime((string) $lastFinishedAt) : time();
+                if ($endTs !== false && $endTs >= $startTs) {
+                    $lastDurationSeconds = $endTs - $startTs;
+                }
+            }
+        }
+
         $tierInfo = automation_runtime_job_tier($key);
         $jobs[] = [
             'job_key' => $key,
@@ -25812,6 +25839,7 @@ function log_viewer_page_data(): array
             'interval_seconds' => (int) $s['interval_seconds'],
             'last_run_at' => $s['last_run_at'],
             'last_run_relative' => supplycore_relative_datetime($s['last_run_at']),
+            'last_duration_seconds' => $lastDurationSeconds,
             'last_success_at' => $s['last_success_at'] ?? null,
             'last_success_relative' => supplycore_relative_datetime($s['last_success_at'] ?? null),
             'last_failure_at' => $s['last_failure_at'] ?? null,
@@ -25858,6 +25886,7 @@ function log_viewer_page_data(): array
             'interval_seconds' => ((int) ($regMeta['default_interval_minutes'] ?? 30)) * 60,
             'last_run_at' => null,
             'last_run_relative' => 'Never',
+            'last_duration_seconds' => null,
             'last_success_at' => null,
             'last_success_relative' => 'Never',
             'last_failure_at' => null,
@@ -25914,15 +25943,47 @@ function log_viewer_page_data(): array
         usort($logFiles, fn (array $a, array $b) => ($b['size_bytes'] ?? 0) <=> ($a['size_bytes'] ?? 0));
     }
 
-    // ── Worker job queue depth (backlog) ─────────────────────────────────
+    // ── Scheduler cycle report (from loop_runner JSONL) ───────────────
+    // The Python orchestrator appends one line per cycle per lane to
+    // scheduler-report.jsonl.  We parse the tail of that file so the
+    // log viewer can render formatted timestamps and per-cycle stats
+    // instead of the raw JSON appearing in the generic file tail.
+    $schedulerReportPath = $logDir !== '' ? $logDir . '/scheduler-report.jsonl' : '';
+    $schedulerCycles = $schedulerReportPath !== ''
+        ? log_viewer_scheduler_report_cycles($schedulerReportPath, 50)
+        : [];
+
+    // ── Backlog depth ────────────────────────────────────────────────────
+    // Two execution paths feed the backlog and they use different tables:
+    //
+    //   1. `worker_jobs` — legacy Python worker-pool path. Rows are created
+    //      when a job is enqueued and updated as workers claim/complete
+    //      them. Status values: 'queued', 'running', 'retry', plus terminal
+    //      'completed'/'failed'/'dead'. This is the ONLY source the widget
+    //      used to read, which is why deployments running primarily through
+    //      the loop-runner / PHP scheduler path saw a permanently-empty
+    //      backlog — nothing writes here in that configuration.
+    //
+    //   2. `sync_schedules` — the primary path for loop_runner (lane-*)
+    //      services and the PHP scheduler daemon. Both claim jobs by
+    //      setting `locked_until` + `current_state='running'` + `last_started_at`
+    //      and release them by setting `locked_until=NULL` + `last_finished_at`.
+    //      "Ready to pick up" = due and not locked; "Running" = currently
+    //      locked; "Retry" = last run failed and the planner has scheduled
+    //      a future retry via `next_due_at`.
+    //
+    // We read both tables and sum them so mixed deployments are still
+    // accurate, and single-path deployments (the common case today) no
+    // longer show a misleading all-zeroes backlog.
+    $backlogQueue = ['queued' => 0, 'running' => 0, 'retry' => 0, 'total' => 0];
+    $backlogByQueue = [];
+
     $workerQueueRaw = db_select(
         "SELECT status, queue_name, COUNT(*) AS cnt
          FROM worker_jobs
          WHERE status IN ('queued', 'running', 'retry')
          GROUP BY status, queue_name"
     );
-    $backlogQueue = ['queued' => 0, 'running' => 0, 'retry' => 0, 'total' => 0];
-    $backlogByQueue = [];
     foreach ($workerQueueRaw as $row) {
         $s = $row['status'];
         $q = $row['queue_name'] ?? 'default';
@@ -25930,6 +25991,57 @@ function log_viewer_page_data(): array
         $backlogQueue[$s] = ($backlogQueue[$s] ?? 0) + $cnt;
         $backlogQueue['total'] += $cnt;
         $backlogByQueue[$q][$s] = $cnt;
+    }
+
+    // Loop-runner / PHP-scheduler backlog from sync_schedules. The single
+    // aggregate query below buckets every enabled schedule row into one of
+    // running / retry / ready / (none) based on claim state and last_status.
+    // Order of the WHEN clauses matters: running wins over retry wins over
+    // ready, so a single row is never double-counted.
+    $schedQueueRow = db_select(
+        "SELECT
+            SUM(CASE
+                WHEN (locked_until IS NOT NULL AND locked_until > UTC_TIMESTAMP())
+                  OR (current_state = 'running'
+                      AND last_started_at IS NOT NULL
+                      AND (last_finished_at IS NULL OR last_finished_at < last_started_at)
+                      AND last_started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 HOUR))
+                THEN 1 ELSE 0
+            END) AS running_count,
+            SUM(CASE
+                WHEN (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+                 AND (current_state IS NULL OR current_state <> 'running')
+                 AND last_status IN ('failed', 'error')
+                 AND next_due_at IS NOT NULL
+                 AND next_due_at > UTC_TIMESTAMP()
+                THEN 1 ELSE 0
+            END) AS retry_count,
+            SUM(CASE
+                WHEN (locked_until IS NULL OR locked_until <= UTC_TIMESTAMP())
+                 AND (current_state IS NULL OR current_state <> 'running')
+                 AND next_due_at IS NOT NULL
+                 AND next_due_at <= UTC_TIMESTAMP()
+                 AND (last_status IS NULL OR last_status NOT IN ('failed', 'error'))
+                THEN 1 ELSE 0
+            END) AS ready_count
+         FROM sync_schedules
+         WHERE enabled = 1"
+    );
+    $schedCounts = $schedQueueRow[0] ?? [];
+    $schedReady = (int) ($schedCounts['ready_count'] ?? 0);
+    $schedRunning = (int) ($schedCounts['running_count'] ?? 0);
+    $schedRetry = (int) ($schedCounts['retry_count'] ?? 0);
+
+    if (($schedReady + $schedRunning + $schedRetry) > 0) {
+        $backlogQueue['queued'] += $schedReady;
+        $backlogQueue['running'] += $schedRunning;
+        $backlogQueue['retry'] += $schedRetry;
+        $backlogQueue['total'] += $schedReady + $schedRunning + $schedRetry;
+        $backlogByQueue['loop_runner'] = [
+            'queued' => $schedReady,
+            'running' => $schedRunning,
+            'retry' => $schedRetry,
+        ];
     }
 
     // ── Overdue job details ───────────────────────────────────────────
@@ -25948,6 +26060,7 @@ function log_viewer_page_data(): array
         'stuck_runs' => $stuckRuns,
         'never_ran' => $neverRan,
         'log_files' => $logFiles,
+        'scheduler_cycles' => $schedulerCycles,
         'kpi' => [
             'total_enabled' => $totalEnabled,
             'total_failed' => $totalFailed,
@@ -25998,6 +26111,120 @@ function log_viewer_tail_file(string $path, int $lines = 5): array
     fclose($fp);
 
     return $buffer;
+}
+
+/**
+ * Parse the most recent cycles from the orchestrator's scheduler-report.jsonl
+ * file written by `python/orchestrator/loop_runner.py:_append_scheduler_cycle_report`.
+ *
+ * Each line in that file is a JSON object describing one scheduler cycle for
+ * one lane (cycle counter, lane, started_at/finished_at, jobs_total/due/ran/
+ * succeeded/failed, slowest_job, failures[], memory_bytes, all_jobs[]).
+ *
+ * Returns the most recent ``$maxCycles`` parsed entries (newest first), each
+ * with normalised numeric fields and a synthesised ``has_failures`` flag.
+ * Lines that fail to decode are silently skipped so the page never throws.
+ */
+function log_viewer_scheduler_report_cycles(string $path, int $maxCycles = 50): array
+{
+    if (!is_file($path) || !is_readable($path)) {
+        return [];
+    }
+
+    // Read the tail of the file efficiently: seek to the end and walk
+    // backwards in 8 KiB chunks until we have enough lines or reach the
+    // start.  Avoids loading multi-megabyte JSONL files into memory.
+    $fp = fopen($path, 'rb');
+    if ($fp === false) {
+        return [];
+    }
+
+    $needLines = max(1, $maxCycles) * 2; // headroom for malformed lines
+    $chunkSize = 8192;
+    $buffer = '';
+    $lines = [];
+
+    fseek($fp, 0, SEEK_END);
+    $position = ftell($fp);
+    if ($position === false) {
+        fclose($fp);
+        return [];
+    }
+
+    while ($position > 0 && count($lines) < $needLines) {
+        $read = (int) min($chunkSize, $position);
+        $position -= $read;
+        fseek($fp, $position, SEEK_SET);
+        $chunk = (string) fread($fp, $read);
+        $buffer = $chunk . $buffer;
+
+        // Split off complete lines from the buffer; keep the leading
+        // partial fragment for the next iteration (it may be the tail
+        // end of an earlier line).
+        $parts = explode("\n", $buffer);
+        $buffer = array_shift($parts) ?? '';
+        foreach (array_reverse($parts) as $part) {
+            $part = rtrim($part, "\r");
+            if ($part !== '') {
+                $lines[] = $part;
+                if (count($lines) >= $needLines) {
+                    break;
+                }
+            }
+        }
+    }
+
+    // If we walked all the way to the start, the leftover buffer is the
+    // very first line of the file.
+    if ($position === 0 && $buffer !== '' && count($lines) < $needLines) {
+        $first = rtrim($buffer, "\r");
+        if ($first !== '') {
+            $lines[] = $first;
+        }
+    }
+
+    fclose($fp);
+
+    // ``$lines`` is currently newest-first.  Decode and normalise.
+    $cycles = [];
+    foreach ($lines as $line) {
+        $decoded = json_decode($line, true);
+        if (!is_array($decoded)) {
+            continue;
+        }
+        $failures = is_array($decoded['failures'] ?? null) ? $decoded['failures'] : [];
+        $cycles[] = [
+            'cycle' => (int) ($decoded['cycle'] ?? 0),
+            'lane' => (string) ($decoded['lane'] ?? 'unknown'),
+            'started_at' => isset($decoded['started_at']) ? (string) $decoded['started_at'] : null,
+            'finished_at' => isset($decoded['finished_at']) ? (string) $decoded['finished_at'] : null,
+            'duration_seconds' => (float) ($decoded['duration_seconds'] ?? 0),
+            'jobs_total' => (int) ($decoded['jobs_total'] ?? 0),
+            'jobs_due' => (int) ($decoded['jobs_due'] ?? 0),
+            'jobs_ran' => (int) ($decoded['jobs_ran'] ?? 0),
+            'jobs_succeeded' => (int) ($decoded['jobs_succeeded'] ?? 0),
+            'jobs_failed' => (int) ($decoded['jobs_failed'] ?? 0),
+            'jobs_skipped_not_due' => (int) ($decoded['jobs_skipped_not_due'] ?? 0),
+            'jobs_blocked_by_deps' => (int) ($decoded['jobs_blocked_by_deps'] ?? 0),
+            'slowest_job' => (string) ($decoded['slowest_job'] ?? ''),
+            'slowest_seconds' => (float) ($decoded['slowest_seconds'] ?? 0),
+            'failures' => $failures,
+            'memory_bytes' => (int) ($decoded['memory_bytes'] ?? 0),
+            'has_failures' => $failures !== [],
+        ];
+        if (count($cycles) >= $maxCycles) {
+            break;
+        }
+    }
+
+    // Sort by finished_at desc so multi-lane cycles interleave correctly.
+    usort($cycles, static function (array $a, array $b): int {
+        $aFinished = $a['finished_at'] !== null ? (int) strtotime($a['finished_at']) : 0;
+        $bFinished = $b['finished_at'] !== null ? (int) strtotime($b['finished_at']) : 0;
+        return $bFinished <=> $aFinished;
+    });
+
+    return array_slice($cycles, 0, $maxCycles);
 }
 
 function log_viewer_external_health(): array

@@ -450,9 +450,6 @@ include __DIR__ . '/../../src/views/partials/header.php';
 <section class="surface-primary mt-4">
     <p class="text-xs text-muted">Dossier computed at <?= htmlspecialchars((string) ($dossier['computed_at'] ?? ''), ENT_QUOTES) ?>.
         Intelligence derived from all killmail activity including small-gang, blops, and gate camps.
-        <?php if ($cpSource === 'sql' || $enSource === 'sql'): ?>
-            Some relationship data sourced from SQL fallback — Neo4j graph may need a rebuild via <code class="text-[10px]">reset_and_rebuild.sh</code>.
-        <?php endif; ?>
     </p>
 </section>
 

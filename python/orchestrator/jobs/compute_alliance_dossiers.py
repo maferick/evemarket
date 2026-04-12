@@ -8,7 +8,10 @@ gate camps, and structure bashes that fall below the battle clustering threshold
 Queries MariaDB ``killmail_events`` / ``killmail_attackers`` for geography, fleet
 composition, behavior, and trends.  Co-presence and enemy data comes from the
 pre-computed ``alliance_relationships`` table (built by ``compute_alliance_relationships``
-from all killmails), with Neo4j and SQL fallbacks.
+from all killmails), with Neo4j as the only per-alliance fallback. The prior
+per-alliance raw-SQL fallback was removed because it re-ran nested DISTINCT
+joins against killmail_attackers/killmail_events once per alliance, which is
+the opposite shape of what we want under scheduler pressure.
 
 Payload Contract (JSON columns stored in alliance_dossiers)
 -----------------------------------------------------------
@@ -16,12 +19,12 @@ Payload Contract (JSON columns stored in alliance_dossiers)
 **top_co_present_json** — alliances co-occurring on the same side::
 
     [{"alliance_id": int, "alliance_name": str, "shared_battles": int,
-      "shared_pilots": int, "source": "relationship_graph"|"neo4j"|"sql"}]
+      "shared_pilots": int, "source": "relationship_graph"|"neo4j"}]
 
 **top_enemies_json** — alliances fought against on opposing sides::
 
     [{"alliance_id": int, "alliance_name": str, "engagements": int,
-      "source": "relationship_graph"|"neo4j"|"sql"}]
+      "source": "relationship_graph"|"neo4j"}]
 
 **top_regions_json**::
 
@@ -85,6 +88,32 @@ else:
 BATCH_SIZE = 200
 RECENT_DAYS = 30
 TOP_K = 10
+# Lookback window for the alliance activity scan.  Previously unbounded,
+# which forced a full-table join of killmail_attackers × killmail_events
+# and consistently exceeded the 720s tier timeout.
+ACTIVITY_LOOKBACK_DAYS = 180
+
+# Upper bound for DECIMAL(14,4) columns (alliance_dossiers.avg_engagement_rate,
+# avg_token_participation, avg_overperformance). Values derived from raw
+# killmail aggregation (kills_per_week, kill/loss ratio) can spike for very
+# active alliances; clamping here is a defensive guard so a single outlier
+# never aborts the entire batch with MariaDB error 1264.
+_DECIMAL_14_4_MAX = 9_999_999_999.9999
+
+
+def _clamp_decimal(value: Any) -> float | None:
+    """Clamp a numeric value to the DECIMAL(14,4) representable range."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num > _DECIMAL_14_4_MAX:
+        return _DECIMAL_14_4_MAX
+    if num < -_DECIMAL_14_4_MAX:
+        return -_DECIMAL_14_4_MAX
+    return num
 
 
 def _dossier_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, Any]) -> None:
@@ -106,8 +135,10 @@ def _load_alliances_with_activity(db: SupplyCoreDb, min_killmails: int = 5) -> l
     """Load alliances with killmail activity from attacker data.
 
     An alliance qualifies if its members appear as attackers on at least
-    ``min_killmails`` distinct killmails.  This captures all combat activity,
-    not just clustered battles.
+    ``min_killmails`` distinct killmails within the lookback window.  The
+    query is bounded to ``ACTIVITY_LOOKBACK_DAYS`` to avoid a full-table
+    scan of killmail_attackers × killmail_events (which consistently
+    exceeded the tier timeout).
     """
     return db.fetch_all(
         """
@@ -134,11 +165,12 @@ def _load_alliances_with_activity(db: SupplyCoreDb, min_killmails: int = 5) -> l
              ON emc.entity_type = 'alliance' AND emc.entity_id = ka.alliance_id
         WHERE ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
           AND ke.zkb_npc = 0
+          AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
         GROUP BY ka.alliance_id
         HAVING total_killmails >= %s
         ORDER BY recent_killmails DESC, total_killmails DESC
         """,
-        (RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, min_killmails),
+        (RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, ACTIVITY_LOOKBACK_DAYS, min_killmails),
     )
 
 
@@ -514,75 +546,6 @@ def _query_enemies_bulk(db: SupplyCoreDb, alliance_ids: list[int]) -> dict[int, 
     return dict(result)
 
 
-def _query_co_presence_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances fighting on the same side via killmail co-attacker data.
-
-    Two alliances are co-present (same side) when their members appear as
-    co-attackers on the same killmails.  Uses ALL killmails, not just
-    battle-linked ones.
-    """
-    rows = db.fetch_all(
-        """
-        SELECT ka2.alliance_id AS co_alliance_id,
-               COUNT(DISTINCT ka1.sequence_id) AS shared_battles,
-               COUNT(DISTINCT ka2.character_id) AS shared_pilots
-        FROM killmail_attackers ka1
-        INNER JOIN killmail_attackers ka2
-             ON ka2.sequence_id = ka1.sequence_id
-            AND ka2.alliance_id <> ka1.alliance_id
-        INNER JOIN killmail_events ke
-             ON ke.sequence_id = ka1.sequence_id
-            AND ke.zkb_npc = 0
-        WHERE ka1.alliance_id = %s
-          AND ka2.alliance_id IS NOT NULL AND ka2.alliance_id > 0
-        GROUP BY ka2.alliance_id
-        HAVING shared_battles >= 2
-        ORDER BY shared_battles DESC
-        LIMIT 15
-        """,
-        (alliance_id,),
-    )
-    return [{"alliance_id": int(r["co_alliance_id"]), "shared_battles": int(r["shared_battles"]),
-             "shared_pilots": int(r["shared_pilots"]), "source": "sql"} for r in rows]
-
-
-def _query_enemies_sql(db: SupplyCoreDb, alliance_id: int) -> list[dict]:
-    """SQL fallback: find alliances on opposing sides via killmail attacker/victim data.
-
-    An alliance is an enemy when our members attack their members (they are
-    victims) or their members attack ours.  Uses ALL killmails.
-    """
-    rows = db.fetch_all(
-        """
-        SELECT enemy_id, COUNT(DISTINCT killmail_id) AS engagements
-        FROM (
-            SELECT ke.victim_alliance_id AS enemy_id, ke.sequence_id AS killmail_id
-            FROM killmail_attackers ka
-            INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
-            WHERE ka.alliance_id = %s
-              AND ke.victim_alliance_id IS NOT NULL AND ke.victim_alliance_id > 0
-              AND ke.victim_alliance_id <> %s
-              AND ke.zkb_npc = 0
-            UNION
-            SELECT ka.alliance_id AS enemy_id, ke.sequence_id AS killmail_id
-            FROM killmail_events ke
-            INNER JOIN killmail_attackers ka ON ka.sequence_id = ke.sequence_id
-            WHERE ke.victim_alliance_id = %s
-              AND ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
-              AND ka.alliance_id <> %s
-              AND ke.zkb_npc = 0
-        ) AS combined
-        GROUP BY enemy_id
-        HAVING engagements >= 2
-        ORDER BY engagements DESC
-        LIMIT 15
-        """,
-        (alliance_id, alliance_id, alliance_id, alliance_id),
-    )
-    return [{"alliance_id": int(r["enemy_id"]), "engagements": int(r["engagements"]),
-             "source": "sql"} for r in rows]
-
-
 def _query_co_presence_neo4j(neo4j_client: Any, alliance_id: int) -> list[dict]:
     """Query Neo4j for alliances whose members fight on the same side.
 
@@ -769,6 +732,37 @@ def _resolve_alliance_names(db: SupplyCoreDb, alliance_ids: list[int]) -> dict[i
     return {int(r["entity_id"]): str(r["entity_name"]) for r in rows if r.get("entity_name")}
 
 
+def _queue_pending_alliance_names(db: SupplyCoreDb, alliance_ids: list[int]) -> int:
+    """Enqueue alliance IDs as 'pending' in entity_metadata_cache.
+
+    Alliance IDs that surface via Neo4j / relationship-graph lookups but
+    have never been seen in killmail ingestion won't exist in
+    ``entity_metadata_cache`` yet, so name resolution falls back to the
+    ``Alliance #<id>`` placeholder. Inserting a ``pending`` row ensures
+    the next ``entity_metadata_resolve_sync`` run picks them up via ESI,
+    so subsequent dossier runs produce real names without manual
+    intervention.
+    """
+    ids = sorted({int(aid) for aid in alliance_ids if int(aid) > 0})
+    if not ids:
+        return 0
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    queued = 0
+    for eid in ids:
+        try:
+            db.execute(
+                """INSERT INTO entity_metadata_cache
+                   (entity_type, entity_id, source_system, resolution_status, last_requested_at)
+                   VALUES ('alliance', %s, 'queue', 'pending', %s)
+                   ON DUPLICATE KEY UPDATE last_requested_at = VALUES(last_requested_at)""",
+                (eid, now),
+            )
+            queued += 1
+        except Exception as exc:
+            logger.warning("Failed to queue alliance %d for name resolution: %s", eid, exc)
+    return queued
+
+
 def _flush_dossiers(db: SupplyCoreDb, dossiers: list[dict[str, Any]]) -> int:
     """Write dossier rows to MariaDB using batched executemany."""
     if not dossiers:
@@ -904,21 +898,13 @@ def run_compute_alliance_dossiers(
             })
 
             # Prefer pre-computed relationship graph (built from ALL killmails),
-            # then Neo4j, then raw SQL as final fallback.
+            # with Neo4j as the only per-alliance fallback.
             co_present = co_presence_bulk.get(aid, [])
             if not co_present:
                 co_present = _query_co_presence_neo4j(neo4j_client, aid)
-            if not co_present:
-                co_present = _query_co_presence_sql(db, aid)
-                if co_present:
-                    logger.info("alliance %d: co-presence from SQL fallback (%d results)", aid, len(co_present))
             enemies = enemies_bulk.get(aid, [])
             if not enemies:
                 enemies = _query_enemies_neo4j(neo4j_client, aid)
-            if not enemies:
-                enemies = _query_enemies_sql(db, aid)
-                if enemies:
-                    logger.info("alliance %d: enemies from SQL fallback (%d results)", aid, len(enemies))
 
             # Deduplicate: if an alliance appears in both co-present and
             # enemies, keep it only in the list where the count is higher.
@@ -953,9 +939,9 @@ def run_compute_alliance_dossiers(
                 "last_seen_at": a.get("last_seen_at"),
                 "primary_region_id": geo["primary_region_id"],
                 "primary_system_id": geo["primary_system_id"],
-                "avg_engagement_rate": behavior.get("kills_per_week", 0),
-                "avg_token_participation": behavior.get("solo_ratio", 0),
-                "avg_overperformance": behavior.get("kill_loss_ratio"),
+                "avg_engagement_rate": _clamp_decimal(behavior.get("kills_per_week", 0)),
+                "avg_token_participation": _clamp_decimal(behavior.get("solo_ratio", 0)),
+                "avg_overperformance": _clamp_decimal(behavior.get("kill_loss_ratio")),
                 "posture": behavior["posture"],
                 "top_co_present_json": json_dumps_safe(co_present),
                 "top_enemies_json": json_dumps_safe(enemies),
@@ -990,10 +976,12 @@ def run_compute_alliance_dossiers(
 
         if unresolved_ids:
             unique_unresolved = sorted(set(unresolved_ids))
+            queued = _queue_pending_alliance_names(db, unique_unresolved)
             logger.warning(
                 "Could not resolve names for %d alliance IDs (first 10: %s). "
-                "These will display as 'Alliance #ID'. Check entity_metadata_cache population.",
-                len(unique_unresolved), unique_unresolved[:10],
+                "These will display as 'Alliance #ID'. Queued %d for background "
+                "ESI resolution via entity_metadata_resolve_sync.",
+                len(unique_unresolved), unique_unresolved[:10], queued,
             )
 
         if not dry_run:

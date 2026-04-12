@@ -6,7 +6,11 @@ A staging system is characterised by:
   * Pilots appear there before showing up in battles
   * Recurring pattern across multiple fights
 
-Uses Neo4j for gate distance calculations and character movement data.
+Neo4j is **required** for multi-hop gate distance calculations — the
+universe graph is the source of truth. When Neo4j is unavailable the
+job exits with ``JobResult.skipped`` rather than running a 1-hop-only
+SQL approximation.
+
 Uses MariaDB for battle locations, participant data, and killmail timestamps.
 
 Output: ``staging_system_candidates`` per (system_id, alliance_id).
@@ -53,7 +57,21 @@ def run_staging_system_detection(
     computed_at = _now_sql()
 
     config = Neo4jConfig.from_runtime(neo4j_raw or {})
-    client = Neo4jClient(config) if config.enabled else None
+    if not config.enabled:
+        # Neo4j is the source of truth for the universe graph; without it
+        # we cannot compute multi-hop gate distances correctly. The old
+        # SQL fallback (1-hop only via `ref_stargates`) silently produced
+        # wrong answers — it is explicitly not a supported failure mode.
+        finish_job_run(
+            db, job, status="skipped",
+            rows_processed=0, rows_written=0,
+            error_text="Neo4j disabled",
+        )
+        return JobResult.skipped(
+            job_key=lock_key,
+            reason="Neo4j is disabled; staging_system_detection requires the universe graph for multi-hop gate distances.",
+        ).to_dict()
+    client = Neo4jClient(config)
 
     try:
         cutoff = (datetime.now(UTC) - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
@@ -78,37 +96,33 @@ def run_staging_system_detection(
         battle_sys_ids = list({int(r["system_id"]) for r in battle_systems})
         rows_processed = len(battle_systems)
 
-        # 2. Find nearby systems (within MAX_GATE_DISTANCE jumps) via Neo4j or stargates
+        # 2. Find nearby systems (within MAX_GATE_DISTANCE jumps) via Neo4j.
+        # Batched UNWIND + CALL subquery: one round-trip for all battle
+        # systems (chunked to bound per-call memory), replacing the old
+        # per-system query loop which issued N queries for N battle
+        # systems. The CALL subquery gives us per-row aggregation so
+        # each sysId gets its own `collect(DISTINCT ...)` result.
         nearby_systems: dict[int, set[int]] = defaultdict(set)  # battle_sys -> set of nearby sys
+        NEARBY_CHUNK = 100
 
-        if client:
-            for sys_id in battle_sys_ids:
-                nearby_rows = client.query(
-                    f"""
-                    MATCH (s:System {{system_id: $sysId}})-[:CONNECTS_TO|JUMP_BRIDGE*1..{MAX_GATE_DISTANCE}]-(n:System)
-                    RETURN DISTINCT n.system_id AS nearby_id
-                    """,
-                    {"sysId": sys_id},
-                )
-                for r in nearby_rows:
-                    nid = int(r["nearby_id"])
-                    nearby_systems[sys_id].add(nid)
-        else:
-            # SQL fallback: use ref_stargates for 1-hop, iterate for more
-            placeholders = ",".join(["%s"] * len(battle_sys_ids))
-            for hop in range(MAX_GATE_DISTANCE):
-                if hop == 0:
-                    rows = db.fetch_all(
-                        f"""
-                        SELECT system_id, dest_system_id
-                        FROM ref_stargates
-                        WHERE system_id IN ({placeholders})
-                        """,
-                        battle_sys_ids,
-                    )
-                    for r in rows:
-                        nearby_systems[int(r["system_id"])].add(int(r["dest_system_id"]))
-                # Multi-hop would require iteration; skip for SQL fallback
+        for i in range(0, len(battle_sys_ids), NEARBY_CHUNK):
+            chunk = battle_sys_ids[i:i + NEARBY_CHUNK]
+            rows = client.query(
+                f"""
+                UNWIND $sysIds AS sysId
+                CALL {{
+                    WITH sysId
+                    MATCH (s:System {{system_id: sysId}})-[:CONNECTS_TO|JUMP_BRIDGE*1..{MAX_GATE_DISTANCE}]-(n:System)
+                    RETURN collect(DISTINCT n.system_id) AS nearby_ids
+                }}
+                RETURN sysId, nearby_ids
+                """,
+                {"sysIds": chunk},
+            )
+            for r in rows:
+                sid = int(r["sysId"])
+                for nid in r.get("nearby_ids") or []:
+                    nearby_systems[sid].add(int(nid))
 
         # 3. Build reverse map: system -> list of battle systems it's near
         system_to_battles: dict[int, list[dict]] = defaultdict(list)

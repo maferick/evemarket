@@ -21,6 +21,7 @@ single codebase.  Without ``--lane``, all jobs run (backward compatible).
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import socket
@@ -30,6 +31,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED, Future
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from .config import load_php_runtime_config, resolve_app_root
@@ -43,7 +45,7 @@ from .display_tiers import (
 from .job_result import JobResult
 from .json_utils import json_dumps_safe, make_json_safe
 from .logging_utils import LoggerAdapter, configure_logging
-from .processor_registry import audit_enabled_python_jobs, run_registered_processor
+from .processor_registry import PYTHON_PROCESSOR_JOB_KEYS, audit_enabled_python_jobs, run_registered_processor
 from .scheduling_graph import build_graph, _topological_tiers
 from .worker_registry import WORKER_JOB_DEFINITIONS
 from .worker_runtime import resident_memory_bytes, utc_now_iso
@@ -65,6 +67,7 @@ class JobOutcome:
     duration_seconds: float
     error: str | None = None
     result: dict[str, Any] = field(default_factory=dict)
+    hog_risk: bool = False
 
 
 _REALTIME_WARN_SECONDS = 15.0  # Warn if a realtime job exceeds this runtime.
@@ -117,12 +120,19 @@ def _run_single_job(
         # remaining work to drain), set next_due_at to now so it's
         # picked up on the very next cycle instead of waiting.
         try:
+            db.update_sync_schedule_status(
+                job_key=job_key,
+                status=status,
+                snapshot_json=json_dumps_safe(result),
+                duration_seconds=elapsed,
+            )
+            db.update_effective_interval(job_key)
             if result.get("has_more"):
                 db.advance_next_due_at(job_key)
             else:
                 db.advance_next_due_at_by_interval(job_key)
         except Exception:
-            pass  # best-effort; row may not exist for sub-pipeline jobs
+            pass
 
         return JobOutcome(
             job_key=job_key,
@@ -140,6 +150,13 @@ def _run_single_job(
 
         _finalize_job(db, job_key, fail_result, logger)
         try:
+            db.update_sync_schedule_status(
+                job_key=job_key,
+                status="failed",
+                snapshot_json=json_dumps_safe(fail_result),
+                duration_seconds=elapsed,
+            )
+            db.update_effective_interval(job_key)
             db.advance_next_due_at_by_interval(job_key)
         except Exception:
             pass
@@ -215,24 +232,64 @@ def _tier_timeout_seconds(
     tier_jobs: list[str],
     definitions: dict[str, dict[str, Any]],
     groups: dict[str, list[str]],
+    max_parallel: int = 1,
 ) -> int:
     """Compute the maximum wall-clock time a tier should be allowed to run.
 
-    For concurrency groups (sequential execution) we sum their members'
-    timeouts.  The tier timeout is the max across all parallel units, plus a
-    generous buffer.
+    A tier is made up of "parallel units": each independent job is one
+    unit (its cost = its own timeout), and each concurrency group is one
+    unit whose members run sequentially under a single lock (cost = sum
+    of members' timeouts).
+
+    How those units map to wall-clock time depends on how many of them
+    can run at once, which is capped by the executor's ``max_parallel``:
+
+      * ``max_parallel >= len(units)`` — everything runs in parallel and
+        the budget is ``max(units)``.
+      * ``max_parallel <= 1``         — fully serialized, budget is
+        ``sum(units)``.
+      * otherwise — the longest unit pins the lower bound and the rest
+        of the work is distributed across the available slots.
+
+    Finally, a 2-minute buffer is added for thread startup, DB
+    connection overhead, etc.  Prior to this fix the formula assumed
+    unbounded parallelism (``max(units) + 120``), which silently
+    starved ``--max-parallel 1`` deployments where multiple heavy jobs
+    share a tier.
     """
-    independent_max = max(
-        (int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in tier_jobs if not any(jk in g for g in groups.values())),
-        default=300,
-    )
-    group_totals = [
+    independent_units = [
+        int(definitions.get(jk, {}).get("timeout_seconds", 300))
+        for jk in tier_jobs
+        if not any(jk in g for g in groups.values())
+    ]
+    group_units = [
         sum(int(definitions.get(jk, {}).get("timeout_seconds", 300)) for jk in gj)
         for gj in groups.values()
     ]
-    longest = max([independent_max] + group_totals)
-    # Add 2-minute buffer for thread startup, DB connection overhead, etc.
-    return longest + 120
+    units = independent_units + group_units
+    if not units:
+        return 300 + 120
+
+    longest = max(units)
+    parallel = max(1, int(max_parallel))
+    if parallel <= 1:
+        budget = sum(units)
+    elif parallel >= len(units):
+        budget = longest
+    else:
+        remainder = sum(units) - longest
+        budget = longest + math.ceil(remainder / parallel)
+
+    return budget + 120
+
+
+def _append_scheduler_cycle_report(path: Path, payload: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json_dumps_safe(payload) + "\n")
+    except OSError:
+        pass
 
 
 def run_tier(
@@ -261,7 +318,7 @@ def run_tier(
         return []
 
     independent, groups = _split_tier_by_concurrency(tier_jobs, graph_nodes)
-    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups)
+    tier_timeout = _tier_timeout_seconds(tier_jobs, definitions, groups, max_parallel)
 
     logger.info(
         f"tier {tier_index}: {len(tier_jobs)} jobs "
@@ -475,9 +532,24 @@ def _run_cycle_dependency_aware(
             # deterministic for tests.
             if reserved and ready:
                 ready.sort(key=lambda k: (get_display_tier(k), k))
+            else:
+                ready.sort(key=lambda k: (0 if str(definitions.get(k, {}).get("priority", "")).lower() == "high" else 1, k))
 
             held_back_by_tier_cap = 0
             for key in ready:
+                is_high = str(definitions.get(key, {}).get("priority", "")).lower() == "high"
+                if max_parallel > 1 and not is_high:
+                    high_ready_waiting = any(
+                        str(definitions.get(candidate, {}).get("priority", "")).lower() == "high"
+                        for candidate in ready
+                    )
+                    high_in_flight = sum(
+                        1
+                        for inflight_key in in_flight.values()
+                        if str(definitions.get(inflight_key, {}).get("priority", "")).lower() == "high"
+                    )
+                    if high_ready_waiting and high_in_flight == 0 and len(in_flight) >= max_parallel - 1:
+                        continue
                 if not tier_capacity_allows(
                     job_key=key,
                     in_flight_by_tier=in_flight_by_tier,
@@ -599,7 +671,7 @@ def _select_jobs(
         filtered = {
             key: defn
             for key, defn in filtered.items()
-            if defn.get("lane", "compute") == lane
+            if defn.get("lane", "compute-misc") == lane
         }
     return filtered
 
@@ -619,6 +691,7 @@ def _run_loop(
     memory_abort_bytes: int | None = None,
     use_tier_barriers: bool = True,
     reserved_tier_slots: dict[int, int] | None = None,
+    report_path: Path | None = None,
 ) -> None:
     """Run the loop continuously (or once)."""
     graph_nodes = build_graph(definitions, known_external_keys=known_external_keys)
@@ -644,6 +717,7 @@ def _run_loop(
     while not shutdown_event.is_set():
         cycle += 1
         cycle_start = time.monotonic()
+        cycle_started_at = datetime.now(timezone.utc)
 
         mem = resident_memory_bytes()
         if mem >= memory_abort_bytes:
@@ -664,6 +738,7 @@ def _run_loop(
         total_skipped = 0
         slowest_key = ""
         slowest_seconds = 0.0
+        cycle_outcomes: list[JobOutcome] = []
 
         # Query the database once per cycle to find which jobs are actually
         # due.  This prevents re-running jobs that just finished and still
@@ -748,6 +823,9 @@ def _run_loop(
                 )
 
                 for o in outcomes:
+                    cycle_outcomes.append(o)
+                    tier_budget = max(1.0, _tier_timeout_seconds(tier_due, definitions, _split_tier_by_concurrency(tier_due, graph_nodes)[1], max_parallel))
+                    o.hog_risk = o.duration_seconds > (tier_budget * 0.5)
                     if o.status == "failed":
                         total_failed += 1
                     elif o.status == "skipped":
@@ -775,6 +853,9 @@ def _run_loop(
                 reserved_tier_slots=reserved_tier_slots,
             )
             for o in outcomes:
+                cycle_outcomes.append(o)
+                tier_budget = max(1.0, float(int(definitions.get(o.job_key, {}).get("timeout_seconds", 300))))
+                o.hog_risk = o.duration_seconds > (tier_budget * 0.5)
                 if o.status == "failed":
                     total_failed += 1
                 elif o.status == "skipped":
@@ -806,6 +887,55 @@ def _run_loop(
                 "slowest_job_seconds": round(slowest_seconds, 1),
             },
         )
+        if report_path is not None:
+            failures = [
+                {
+                    "job_key": o.job_key,
+                    "error": o.error,
+                    "duration_seconds": round(o.duration_seconds, 3),
+                }
+                for o in cycle_outcomes
+                if o.status == "failed"
+            ]
+            # In tier-barrier mode outcomes are scoped per-tier; rebuild from counters and latest tier runs only.
+            all_jobs_payload: list[dict[str, Any]] = []
+            if use_tier_barriers:
+                # best-effort snapshot from due keys; per-job statuses are emitted by job logs.
+                for key in sorted(due_keys):
+                    all_jobs_payload.append({"job_key": key, "status": "due"})
+            else:
+                for o in cycle_outcomes:
+                    row = {
+                        "job_key": o.job_key,
+                        "status": o.status,
+                        "duration_seconds": round(o.duration_seconds, 3),
+                        "hog_risk": o.hog_risk,
+                    }
+                    if o.error:
+                        row["error"] = o.error
+                    all_jobs_payload.append(row)
+
+            finished_at = datetime.now(timezone.utc)
+            report_payload = {
+                "cycle": cycle,
+                "started_at": cycle_started_at.isoformat().replace("+00:00", "Z"),
+                "finished_at": finished_at.isoformat().replace("+00:00", "Z"),
+                "duration_seconds": round(cycle_elapsed, 3),
+                "lane": lane or "all",
+                "jobs_total": len(all_job_keys),
+                "jobs_due": due_count,
+                "jobs_ran": total_success + total_failed,
+                "jobs_succeeded": total_success,
+                "jobs_failed": total_failed,
+                "jobs_skipped_not_due": skipped_not_due,
+                "jobs_blocked_by_deps": max(0, due_count - (total_success + total_failed + total_skipped)),
+                "slowest_job": slowest_key,
+                "slowest_seconds": round(slowest_seconds, 3),
+                "failures": failures,
+                "memory_bytes": resident_memory_bytes(),
+                "all_jobs": all_jobs_payload,
+            }
+            _append_scheduler_cycle_report(report_path, report_payload)
 
         if run_once:
             break
@@ -863,7 +993,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-_VALID_LANES = {"realtime", "ingestion", "compute", "maintenance"}
+_VALID_LANES = {
+    "realtime",
+    "ingestion",
+    "compute-graph",      # neo4j + graph analytics
+    "compute-battle",     # battle rollups, theater, escalation, suspicion
+    "compute-behavioral", # behavioral scoring, cohort, character pipeline
+    "compute-cip",        # cip_* correlation/event pipeline
+    "compute-misc",       # market/alliance/geo/AI/rollup catch-all
+    "maintenance",
+}
 
 
 def _validate_lane_assignments(definitions: dict[str, dict[str, Any]]) -> list[str]:
@@ -903,15 +1042,26 @@ def main(argv: list[str] | None = None) -> int:
 
     db = SupplyCoreDb(dict(raw_config.get("db") or {}))
 
-    # Audit: make sure all registered jobs have Python processors bound.
+    # Ensure schedule rows exist from Python worker registry.
+    ensure_summary = db.ensure_schedule_rows_from_registry(
+        WORKER_JOB_DEFINITIONS,
+        PYTHON_PROCESSOR_JOB_KEYS,
+    )
+
+    # Audit: warn on missing processor bindings (do not crash startup).
     audit = audit_enabled_python_jobs(db)
     if audit["issues"]:
         for issue in audit["issues"]:
-            logger.error(
-                "python processor binding audit failure",
+            logger.warning(
+                "python processor binding audit warning",
                 payload={"event": "loop_runner.binding_audit.failed", "issue": issue},
             )
-        return 1
+    logger.info(
+        f"{ensure_summary['registered']} jobs registered, {ensure_summary['enabled']} enabled, "
+        f"{ensure_summary['missing_processors']} missing processors, "
+        f"{ensure_summary['disabled_by_operator']} disabled-by-operator",
+        payload={"event": "loop_runner.schedule_registry_summary", **ensure_summary},
+    )
 
     # Validate lane assignments before starting.
     lane_issues = _validate_lane_assignments(WORKER_JOB_DEFINITIONS)
@@ -959,6 +1109,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     state_file = Path(worker_settings.get("pool_state_file", app_root / "storage/run/loop-runner-heartbeat.json"))
+    report_file = app_root / "storage/logs/scheduler-report.jsonl"
     # Per-lane state file so multiple lane processes don't overwrite each other.
     if lane:
         state_file = state_file.with_name(f"lane-{lane}-heartbeat.json")
@@ -1039,7 +1190,8 @@ def main(argv: list[str] | None = None) -> int:
             kwargs={"known_external_keys": bg_keys | external_lane_keys, "lane": lane,
                     "memory_abort_bytes": mem_abort,
                     "use_tier_barriers": not no_tier_barriers,
-                    "reserved_tier_slots": reserved_tier_slots or None},
+                    "reserved_tier_slots": reserved_tier_slots or None,
+                    "report_path": report_file},
             name="fast-loop",
             daemon=True,
         )
@@ -1053,7 +1205,8 @@ def main(argv: list[str] | None = None) -> int:
             kwargs={"known_external_keys": fast_keys | external_lane_keys, "lane": lane,
                     "memory_abort_bytes": mem_abort,
                     "use_tier_barriers": not no_tier_barriers,
-                    "reserved_tier_slots": reserved_tier_slots or None},
+                    "reserved_tier_slots": reserved_tier_slots or None,
+                    "report_path": report_file},
             name="background-loop",
             daemon=True,
         )
@@ -1089,6 +1242,29 @@ def main(argv: list[str] | None = None) -> int:
     })
 
     logger.info("loop runner stopped", payload={"event": "loop_runner.stopped", "worker_id": worker_id})
+
+    # When shutting down on a signal (SIGTERM/SIGINT) or a memory-abort
+    # request, the inner ThreadPoolExecutors used by run_tier() and
+    # _run_cycle_dependency_aware() were torn down with
+    # `pool.shutdown(wait=False, cancel_futures=True)` so the dispatcher
+    # could exit promptly without blocking on long-running jobs.  Their
+    # already-running worker threads, however, remain registered in
+    # concurrent.futures._threads_queues, and Python's atexit handler will
+    # join them before the interpreter actually exits.  For compute-bg jobs
+    # that routinely run for minutes (killmail backfills, CIP pipeline,
+    # horizon forecasts) that join easily exceeds systemd
+    # `TimeoutStopSec=90s`, which then trips
+    # `Failed with result 'timeout'` / SIGKILL on the lane services
+    # (#1001 lane-compute-bg, #1003 lane-compute).
+    #
+    # Force-exit instead so systemd records a clean stop.  All per-job DB
+    # state was finalised by `_finalize_job` before this point and the JSON
+    # log handlers flush line-by-line, so nothing material is lost.  The
+    # `--once` path returns normally because shutdown_event stays unset
+    # there.
+    if shutdown_event.is_set():
+        os._exit(0)
+
     return 0
 
 

@@ -97,30 +97,71 @@ Operational note: this audit intentionally makes disabled dependencies explicit 
 
 ## 3) Rolling/work-conserving planner model (implemented in Python worker lane)
 
-The recurring worker lane now uses rolling planner metadata per job:
+The recurring worker uses a lane-aware, tier-by-tier loop runner with rolling planner metadata per job:
 
-- `freshness_sensitivity`
-- `min_interval_seconds`
-- `max_staleness_seconds`
-- `cooldown_seconds`
-- `runtime_class`
-- `resource_cost`
-- `lock_group`
-- `opportunistic_background`
-- `priority`
+- `freshness_sensitivity` — `"immediate"` (high-priority) or `"background"` (tolerates staleness)
+- `cooldown_seconds` — pause after completion before re-evaluation
+- `runtime_class` — resource profile hint (`sync_light`, `market_heavy`, `battle_heavy`, `graph_heavy`)
+- `resource_cost` — `"low"`, `"medium"`, or `"high"`
+- `concurrency_group` — resource-level mutual exclusion (replaces old `lock_group`)
+- `depends_on` — DAG dependencies; upstream jobs must complete before downstream runs
+- `opportunistic_background` — `True` = only runs on spare capacity
+- `priority` — `"high"`, `"normal"`, or `"low"`
+- `lane` — workload isolation lane (see below)
+- `timeout_seconds` — per-job hard timeout
 
-Planner behavior:
+### Execution model (loop runner)
 
-1. Evaluate each recurring job continuously.
-2. Skip if a queued/running/retry row already exists.
-3. Skip if still inside minimum interval **unless** staleness exceeded.
-4. Queue immediately when freshness/staleness needs demand it.
-5. Compute urgency score from priority + staleness + immediacy class.
-6. Claim next job by priority then urgency score (work-conserving selection).
-7. Emit planner decisions into `scheduler_planner_decisions` when available.
-8. Emit claim-time diagnostics/log payload containing selected urgency metadata.
+The loop runner (`python/orchestrator/loop_runner.py`) replaces the legacy worker-pool:
 
-This is rolling decision-driven orchestration, not a fixed minute-offset trigger table.
+1. Compute execution tiers from the job dependency DAG (topological sort).
+2. For each tier, run all due jobs in parallel (respecting concurrency groups).
+3. Wait for every job in the tier to finish before starting the next tier.
+4. Each tier has a calculated timeout budget based on member job timeouts, concurrency
+   group serialization costs, and the deployment's `--max-parallel` setting.
+5. When all tiers are done, start over immediately.
+
+### Lanes
+
+Jobs are assigned to isolated execution lanes:
+
+| Lane | Purpose |
+|------|---------|
+| `realtime` | Market/alliance syncs, instant alerts, dashboard summaries |
+| `ingestion` | ESI/EveWho API-bound syncs |
+| `compute-graph` | Neo4j graph analytics pipeline |
+| `compute-battle` | Battle rollups, theater intelligence, suspicion scoring |
+| `compute-behavioral` | Behavioral scoring, cohort baselines, temporal detection |
+| `compute-cip` | Character Intelligence Profile correlation/event pipeline |
+| `compute-misc` | Alliance dossiers, market intelligence, map compute |
+| `maintenance` | Graph audits, cache cleanup, recalibration |
+
+Each lane runs as a separate systemd service for workload isolation.
+
+### Concurrency groups
+
+Jobs in the same concurrency group never overlap, regardless of dependencies.
+Use *only* for resource-level mutual exclusion (e.g. Neo4j bulk writes):
+
+- `graph_neo4j_write` — graph sync, killmail edges, universe sync
+- `battle_rollup_write` — battle rollup exclusive writes
+- `market_backfill` — historical ESI fetches
+- `evewho_api` — EveWho API rate-limited jobs
+
+**Do not** use concurrency groups for ordering — use `depends_on` instead.
+Redundant groups serialize jobs unnecessarily and inflate tier timeout budgets.
+
+### Tier timeout calculation
+
+Each tier's wall-clock budget is computed from its constituent jobs:
+
+- Independent jobs contribute their own `timeout_seconds`.
+- Concurrency group members are summed (they run sequentially within the group).
+- These "units" are distributed across `--max-parallel` worker slots.
+- A 120-second buffer is added for overhead.
+
+If a tier exceeds its budget, remaining jobs are marked as "Exceeded tier timeout"
+and the scheduler advances to the next tier.
 
 ---
 

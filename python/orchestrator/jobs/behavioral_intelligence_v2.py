@@ -5,7 +5,7 @@ import math
 import statistics
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -386,36 +386,22 @@ def run_compute_suspicion_scores_v2(
     NEIGHBOR_CHUNK = 2000
     MAX_WORKERS = 4
 
-    # Try Neo4j for neighbor data — the CO_OCCURS_WITH edges are pre-computed
-    # and much faster to traverse than a self-join in MySQL.
+    # Neo4j is required: the CO_OCCURS_WITH graph is the source of truth
+    # for character-to-character neighbor weights. The previous MySQL
+    # self-join fallback on `battle_actor_features` (a window-function
+    # ROW_NUMBER OVER PARTITION self-join run in parallel chunks) was a
+    # workaround for when Neo4j wasn't available, and it's exactly the
+    # sort of expensive-backup-path that kills scheduler cycle budget
+    # during a Neo4j hiccup. Under the "Neo4j is the source of truth,
+    # SQL is just row storage" regime we skip the job explicitly when
+    # Neo4j is disabled rather than silently running an order-of-
+    # magnitude slower fallback.
     neo4j_cfg = Neo4jConfig.from_runtime(neo4j_config or {})
-    use_neo4j_neighbors = neo4j_cfg.enabled
-
-    def _fetch_neighbor_chunk(chunk_ids: list[int]) -> list[dict[str, Any]]:
-        placeholders = ",".join(["%s"] * len(chunk_ids))
-        return db.fetch_all(
-            f"""
-            SELECT
-                x.character_id,
-                x.other_character_id,
-                x.shared_battle_count,
-                x.high_sustain_count
-            FROM (
-                SELECT
-                    baf1.character_id,
-                    baf2.character_id AS other_character_id,
-                    COUNT(DISTINCT baf1.battle_id) AS shared_battle_count,
-                    SUM(CASE WHEN baf1.participated_in_high_sustain = 1 OR baf2.participated_in_high_sustain = 1 THEN 1 ELSE 0 END) AS high_sustain_count,
-                    ROW_NUMBER() OVER (PARTITION BY baf1.character_id ORDER BY COUNT(DISTINCT baf1.battle_id) DESC) AS rn
-                FROM battle_actor_features baf1
-                INNER JOIN battle_actor_features baf2 ON baf2.battle_id = baf1.battle_id AND baf2.character_id <> baf1.character_id
-                WHERE baf1.character_id IN ({placeholders})
-                GROUP BY baf1.character_id, baf2.character_id
-            ) x
-            WHERE x.rn <= 5
-            """,
-            tuple(chunk_ids),
-        )
+    if not neo4j_cfg.enabled:
+        return JobResult.skipped(
+            job_key="compute_suspicion_scores_v2",
+            reason="Neo4j is disabled; compute_suspicion_scores_v2 requires the CO_OCCURS_WITH character graph.",
+        ).to_dict()
 
     def _fetch_battles_chunk(chunk_ids: list[int]) -> list[dict[str, Any]]:
         placeholders = ",".join(["%s"] * len(chunk_ids))
@@ -445,38 +431,14 @@ def run_compute_suspicion_scores_v2(
 
     top_battles_rows: list[dict[str, Any]] = []
 
-    if use_neo4j_neighbors:
-        # Fast path: read pre-computed CO_OCCURS_WITH from the graph.
-        neo4j = Neo4jClient(neo4j_cfg)
-        top_neighbors = _fetch_neighbors_from_neo4j(neo4j, all_character_ids)
-        # Only need top-battles from MySQL — run those in parallel.
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            for result_rows in pool.map(_fetch_battles_chunk, chunks):
-                top_battles_rows.extend(result_rows)
-    else:
-        # Fallback: parallel MySQL self-join for neighbors + top battles.
-        support_rows: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            neighbor_futures = {pool.submit(_fetch_neighbor_chunk, c): "neighbor" for c in chunks}
-            battle_futures = {pool.submit(_fetch_battles_chunk, c): "battle" for c in chunks}
-            all_futures = {**neighbor_futures, **battle_futures}
-            for future in as_completed(all_futures):
-                result_rows = future.result()
-                if all_futures[future] == "neighbor":
-                    support_rows.extend(result_rows)
-                else:
-                    top_battles_rows.extend(result_rows)
-
-        top_neighbors: dict[int, list[dict[str, Any]]] = {}
-        for row in support_rows:
-            cid = int(row.get("character_id") or 0)
-            top_neighbors.setdefault(cid, []).append(
-                {
-                    "character_id": int(row.get("other_character_id") or 0),
-                    "weight": float(row.get("shared_battle_count") or 0.0),
-                    "high_sustain_battle_count": int(row.get("high_sustain_count") or 0),
-                }
-            )
+    # Read pre-computed CO_OCCURS_WITH from the graph (bulk-paginated
+    # inside `_fetch_neighbors_from_neo4j` at 5K characters per call).
+    neo4j = Neo4jClient(neo4j_cfg)
+    top_neighbors = _fetch_neighbors_from_neo4j(neo4j, all_character_ids)
+    # Top-battles still come from MySQL — run those in parallel chunks.
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        for result_rows in pool.map(_fetch_battles_chunk, chunks):
+            top_battles_rows.extend(result_rows)
 
     top_battles_map: dict[int, list[dict[str, Any]]] = {}
     for tb_row in top_battles_rows:

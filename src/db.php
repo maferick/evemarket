@@ -9254,12 +9254,12 @@ function db_sync_schedule_fetch_backfill_candidates(int $limit = 20): array
            AND (next_due_at IS NULL OR next_due_at > UTC_TIMESTAMP())
            AND (
                 last_finished_at IS NULL
-                OR TIMESTAMPDIFF(SECOND, last_finished_at, UTC_TIMESTAMP()) >= GREATEST(60, min_backfill_gap_seconds)
+                OR last_finished_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL GREATEST(60, min_backfill_gap_seconds) SECOND)
            )
            AND (
                 max_early_start_seconds <= 0
                 OR next_due_at IS NULL
-                OR TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), next_due_at) <= max_early_start_seconds
+                OR next_due_at <= DATE_ADD(UTC_TIMESTAMP(), INTERVAL max_early_start_seconds SECOND)
            )
          ORDER BY ' . $priorityRank . ' ASC,
                   CASE WHEN last_finished_at IS NULL THEN 0 ELSE 1 END ASC,
@@ -12959,10 +12959,21 @@ function db_killmail_overview_summary(int $recentHours = 24, string $startDate =
     // UPDATE, so there is never more than one row per identity. Scanning
     // killmail_events directly is safe and orders of magnitude faster than
     // wrapping it in a GROUP BY derived table (db_killmail_latest_sequences_sql).
+    //
+    // `recent_count` powers the "Recent Ingestion — Stored in the last N hours"
+    // card on the overview dashboard, so it must filter on the row-insertion
+    // timestamp (`created_at`), NOT `effective_killmail_at`. The latter is a
+    // generated column `COALESCE(killmail_time, created_at)` that resolves to
+    // the in-game kill time, so every backfill write (EveRef tarball imports,
+    // character_killmail_sync, killmail_history_backfill, ...) lands with an
+    // old `effective_killmail_at` and was invisible to this counter even
+    // though the row had just been stored. The end result was a permanent
+    // "Recent Ingestion: 0" display whenever the R2Z2 live stream happened
+    // to be quiet, despite the total count and sync freshness both moving.
     $summary = db_select_one(
         "SELECT
             COUNT(*) AS total_count,
-            SUM(CASE WHEN e.effective_killmail_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
+            SUM(CASE WHEN e.created_at >= (UTC_TIMESTAMP() - INTERVAL {$safeRecentHours} HOUR) THEN 1 ELSE 0 END) AS recent_count,
             MAX(e.sequence_id) AS max_sequence_id,
             MAX(e.created_at) AS last_ingested_at,
             MAX(e.uploaded_at) AS latest_uploaded_at
@@ -14691,7 +14702,7 @@ function db_pilot_search(string $query, int $limit = 30): array
     }
     $safeLimit = max(1, min(100, $limit));
     return db_select(
-        'SELECT DISTINCT
+        'SELECT
             emc.entity_id AS character_id,
             emc.entity_name AS character_name,
             emc_a.entity_name AS alliance_name,
@@ -14972,7 +14983,7 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
          LEFT JOIN character_behavioral_scores cbs ON cbs.character_id = ccs.character_id
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = ccs.character_id
          WHERE ccs.character_id IN (
-             SELECT DISTINCT bp.character_id FROM battle_participants bp
+             SELECT bp.character_id FROM battle_participants bp
              WHERE bp.alliance_id IN (' . $placeholders . ')
          )
          UNION
@@ -14989,9 +15000,10 @@ function db_battle_intelligence_top_characters(int $limit = 50): array
             cbs.behavioral_risk_score AS blended_score
          FROM character_behavioral_scores cbs
          LEFT JOIN entity_metadata_cache emc ON emc.entity_type = "character" AND emc.entity_id = cbs.character_id
-         WHERE cbs.character_id NOT IN (SELECT character_id FROM character_counterintel_scores)
+         LEFT JOIN character_counterintel_scores ccs_exclude ON ccs_exclude.character_id = cbs.character_id
+         WHERE ccs_exclude.character_id IS NULL
            AND cbs.character_id IN (
-               SELECT DISTINCT ka.character_id FROM killmail_attackers ka
+               SELECT ka.character_id FROM killmail_attackers ka
                INNER JOIN killmail_events ke ON ke.sequence_id = ka.sequence_id
                WHERE ke.victim_alliance_id IN (' . $placeholders . ')
                   OR ka.alliance_id IN (' . $placeholders . ')
@@ -15904,7 +15916,7 @@ function db_graph_query_preset_execute(string $presetKey, array $params = []): a
     if ($trackedAllianceIds !== [] && stripos($template, 'character_id') !== false && $presetKey !== 'recurring_motifs') {
         $placeholders = implode(',', array_fill(0, count($trackedAllianceIds), '?'));
         $trackedCte = 'SELECT _inner.* FROM (' . $template . ') _inner '
-            . 'WHERE _inner.character_id IN (SELECT DISTINCT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
+            . 'WHERE _inner.character_id IN (SELECT bp.character_id FROM battle_participants bp WHERE bp.alliance_id IN (' . $placeholders . '))';
         $template = $trackedCte;
         $queryParams = array_merge([$limit], $trackedAllianceIds);
     }

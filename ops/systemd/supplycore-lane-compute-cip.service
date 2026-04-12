@@ -1,5 +1,5 @@
 [Unit]
-Description=SupplyCore lane: compute fast loop (graph, battle, theater, heavy aggregation)
+Description=SupplyCore lane: compute-cip (correlated incident pipeline: signals, fusion, events, calibration)
 After=network.target mariadb.service
 Wants=network.target
 
@@ -10,13 +10,13 @@ Group=www-data
 WorkingDirectory=/var/www/SupplyCore
 EnvironmentFile=-/etc/default/supplycore-worker
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane compute --max-parallel 4 --fast-pause 15 --fast-only --memory-max-gb 1.5
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py loop-runner --app-root /var/www/SupplyCore --lane compute-cip --max-parallel 1 --fast-pause 15 --background-pause 30 --memory-max-gb 3.0
 Nice=5
 Restart=always
 RestartSec=5
 KillSignal=SIGTERM
 TimeoutStopSec=90
-MemoryMax=2G
+MemoryMax=4G
 StandardOutput=journal
 StandardError=journal
 

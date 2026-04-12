@@ -46,7 +46,11 @@ DORMANCY_THRESHOLD_DAYS = 30  # gap ≥ this triggers dormancy check
 CUSUM_THRESHOLD = 4.0         # cumulative sum alarm threshold
 NEO4J_BATCH_SIZE = 500
 MARIADB_BATCH_SIZE = 500      # rows per transaction for evidence writes
-LOOKBACK_DAYS = 365           # bound timestamp queries to avoid full-table scans
+# Lookback for timestamp queries.  The original 365-day window loaded the
+# entire year of killmail_attackers×killmail_events into memory, exceeding
+# the 2040s tier timeout.  90 days is sufficient for drift/burstiness
+# detection; dormancy detection only needs recent vs pre-recent comparison.
+LOOKBACK_DAYS = 90
 
 
 def _now_sql() -> str:

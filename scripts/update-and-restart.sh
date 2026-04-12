@@ -29,6 +29,10 @@ SMART_SKIP_RESTART=0
 RESTART_SERVICES=()
 FAILED_SERVICES=()
 UNHEALTHY_SERVICES=()
+# Core units that were newly installed this run (dest file did not exist
+# before sync). These get enable --now'd after daemon-reload, because the
+# normal service discovery only sees units that are already loaded.
+NEW_CORE_UNITS=()
 
 # Timeout (seconds) to wait for a service to become active after restart.
 HEALTH_CHECK_TIMEOUT=30
@@ -46,8 +50,11 @@ CORE_UNITS=(
   supplycore-loop-runner.service
   supplycore-lane-realtime.service
   supplycore-lane-ingestion.service
-  supplycore-lane-compute.service
-  supplycore-lane-compute-bg.service
+  supplycore-lane-compute-graph.service
+  supplycore-lane-compute-battle.service
+  supplycore-lane-compute-behavioral.service
+  supplycore-lane-compute-cip.service
+  supplycore-lane-compute-misc.service
   supplycore-lane-maintenance.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
@@ -77,6 +84,9 @@ STALE_UNITS=(
   supplycore-php-compute-worker@.service
   supplycore-orchestrator.service
   supplycore-worker@.service
+  # Superseded by the compute-{graph,battle,behavioral,cip,misc} sub-lanes.
+  supplycore-lane-compute.service
+  supplycore-lane-compute-bg.service
 )
 
 usage() {
@@ -294,6 +304,12 @@ sync_systemd_units() {
     if [[ -f "${dest}" ]] && cmp -s "${src}" "${dest}"; then
       continue  # already up to date
     fi
+    # Track fresh installs (dest previously absent) so we can enable them
+    # after daemon-reload. systemctl discover only sees loaded units, so a
+    # brand-new unit file would otherwise sit unused in /etc/systemd/system.
+    if [[ ! -f "${dest}" ]]; then
+      NEW_CORE_UNITS+=("${unit}")
+    fi
     log "Installing ${unit}"
     run_cmd cp "${src}" "${dest}"
     UNITS_CHANGED=1
@@ -345,6 +361,81 @@ sync_systemd_units() {
   done
 }
 
+# Enable and start newly-installed core units after daemon-reload.
+#
+# discover_services() only picks up units that systemd already knows about,
+# so a newly-copied unit file (e.g. supplycore-lane-compute-graph.service on
+# a host that never had lane services) would otherwise be copied but never started.
+# This function runs `systemctl enable --now` for each fresh install, with
+# guards for opt-in timers and the lanes-vs-monolithic runner conflict.
+enable_new_core_units() {
+  if [[ ${#NEW_CORE_UNITS[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  # Detect which runner mode the host is using so we don't start a service
+  # that conflicts with the active mode (lanes vs monolithic).  Any lane unit
+  # being active (including legacy compute/compute-bg prior to sub-lane split)
+  # counts as lanes mode.
+  local lanes_active=false
+  for lane_svc in \
+      supplycore-lane-realtime.service \
+      supplycore-lane-ingestion.service \
+      supplycore-lane-compute.service \
+      supplycore-lane-compute-bg.service \
+      supplycore-lane-compute-graph.service \
+      supplycore-lane-compute-battle.service \
+      supplycore-lane-compute-behavioral.service \
+      supplycore-lane-compute-cip.service \
+      supplycore-lane-compute-misc.service \
+      supplycore-lane-maintenance.service; do
+    if systemctl is-active --quiet "${lane_svc}" 2>/dev/null \
+        || systemctl is-enabled --quiet "${lane_svc}" 2>/dev/null; then
+      lanes_active=true
+      break
+    fi
+  done
+
+  local monolithic_active=false
+  if systemctl is-active --quiet supplycore-loop-runner.service 2>/dev/null \
+      || systemctl is-enabled --quiet supplycore-loop-runner.service 2>/dev/null; then
+    monolithic_active=true
+  fi
+
+  local unit
+  for unit in "${NEW_CORE_UNITS[@]}"; do
+    # Hourly-loop and claude-triage timers are opt-in per the CORE_UNITS
+    # comment above — sync the files but never auto-enable.
+    case "${unit}" in
+      supplycore-hourly-loop.service|supplycore-hourly-loop.timer| \
+      supplycore-claude-triage.service|supplycore-claude-triage.timer)
+        log "Skipping auto-enable of opt-in unit ${unit} (enable manually after review)"
+        continue
+        ;;
+    esac
+
+    # Lane vs monolithic conflict guards.
+    if [[ "${unit}" == supplycore-lane-*.service ]]; then
+      if [[ ${monolithic_active} == true && ${lanes_active} == false ]]; then
+        log "Skipping auto-enable of ${unit}: monolithic loop-runner is active (lanes mode not in use)"
+        continue
+      fi
+    fi
+    if [[ "${unit}" == "supplycore-loop-runner.service" ]]; then
+      if [[ ${lanes_active} == true ]]; then
+        log "Skipping auto-enable of ${unit}: lane services are active (monolithic mode not in use)"
+        continue
+      fi
+    fi
+
+    log "Enabling newly-installed unit ${unit}"
+    if ! run_cmd systemctl enable --now "${unit}"; then
+      log_warn "Failed to enable ${unit}"
+      FAILED_SERVICES+=("${unit}")
+    fi
+  done
+}
+
 discover_services() {
   # Auto-discover supplycore-* services and timers that are actually loaded.
   # Skips template definitions (@.service) and not-found/masked units.
@@ -364,11 +455,38 @@ discover_services() {
     | awk '/^supplycore-/ {print $1}' \
     || true)
 
+  # Identify the service we're currently running under (if any) so we
+  # never try to restart our own invoking unit. systemd sets INVOCATION_ID
+  # for any process launched from a unit, and `systemctl status $PID`
+  # resolves that PID back to the owning unit name.
+  local self_unit=""
+  if [[ -n "${INVOCATION_ID:-}" ]]; then
+    self_unit=$(systemctl status "$$" --no-pager 2>/dev/null \
+      | awk 'NR==1 && /\.service/ {for (i=1; i<=NF; i++) if ($i ~ /\.service$/) {print $i; exit}}' \
+      || true)
+  fi
+
   while read -r unit load_state _rest; do
     [[ -z "${unit}" ]] && continue
     [[ "${unit}" == *'@.service' ]] && continue
     [[ "${load_state}" == "not-found" ]] && continue
     [[ "${load_state}" == "masked" ]] && continue
+    # Skip oneshot services — they are run-to-completion by design and
+    # are typically driven by a timer. Restarting a oneshot while it is
+    # still activating causes systemd to fail the job (classic case:
+    # the hourly-loop service restarting itself from within its own
+    # ExecStart). The timer entry is still restarted below, which is
+    # the correct handle for rescheduling oneshots.
+    local svc_type
+    svc_type=$(systemctl show -p Type --value "${unit}" 2>/dev/null || true)
+    if [[ "${svc_type}" == "oneshot" ]]; then
+      continue
+    fi
+    # Belt-and-suspenders: never restart the unit that is currently
+    # running this script (applies to non-oneshot self-invocations too).
+    if [[ -n "${self_unit}" && "${unit}" == "${self_unit}" ]]; then
+      continue
+    fi
     # Skip services that are triggered by timers — we restart the timer instead
     local is_timer_triggered=false
     for tt in "${timer_triggered[@]+"${timer_triggered[@]}"}"; do
@@ -620,6 +738,11 @@ if [[ ${SMART_SKIP_RESTART} -eq 0 ]]; then
 
   # ------- Service discovery and restart -------
   run_cmd systemctl daemon-reload
+
+  # Enable & start any core units that were freshly installed this run.
+  # Must happen after daemon-reload so systemd picks up the new unit files,
+  # and before discover_services so the new units become visible to it.
+  enable_new_core_units
 
   if [[ ${#EXPLICIT_SERVICES[@]} -gt 0 ]]; then
     RESTART_SERVICES=("${EXPLICIT_SERVICES[@]}")

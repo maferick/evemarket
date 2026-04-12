@@ -145,6 +145,9 @@ def run_compute_cohort_baselines(
     own_alliance_id = int(own_alliance_row.get("setting_value") or 0) if own_alliance_row else 0
 
     # ── Step 1: Load character feature vectors ────────────────────────────
+    # The battle_participants subquery is bounded to the last 180 days to
+    # avoid a full-table scan (~millions of rows).  The logi/capital rates
+    # and alliance_id only need recent data to be accurate.
     rows = db.fetch_all(
         """
         SELECT
@@ -168,12 +171,14 @@ def run_compute_cohort_baselines(
         LEFT JOIN character_graph_intelligence cgi ON cgi.character_id = cbi.character_id
         LEFT JOIN (
             SELECT
-                character_id,
-                AVG(is_logi) AS is_logi_rate,
-                AVG(is_capital) AS is_capital_rate,
-                MAX(alliance_id) AS alliance_id
-            FROM battle_participants
-            GROUP BY character_id
+                bp.character_id,
+                AVG(bp.is_logi) AS is_logi_rate,
+                AVG(bp.is_capital) AS is_capital_rate,
+                MAX(bp.alliance_id) AS alliance_id
+            FROM battle_participants bp
+            INNER JOIN battle_rollups br ON br.battle_id = bp.battle_id
+            WHERE br.started_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 DAY)
+            GROUP BY bp.character_id
         ) bp_agg ON bp_agg.character_id = cbi.character_id
         """
     )

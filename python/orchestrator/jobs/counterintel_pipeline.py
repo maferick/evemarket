@@ -255,63 +255,135 @@ def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_a
     written = 0
     fetched_at = _now_sql()
     expires_at = (datetime.now(UTC) + timedelta(hours=max(1, ttl_hours))).strftime("%Y-%m-%d %H:%M:%S")
-    with db.transaction() as (_, cursor):
-        for character_id in pending:
-            loaded = character_payloads.get(character_id)
-            if not loaded:
-                continue
-            source_endpoint, payload = loaded
-            history = payload.get("corporation_history") if isinstance(payload.get("corporation_history"), list) else []
-            corp_hops = len(history)
-            short_tenure = 0
-            event_rows: list[tuple[int, str, str | None, str]] = []
-            for idx, row in enumerate(history):
-                joined = str(row.get("start_date") or "")
-                left = str(history[idx + 1].get("start_date") or "") if idx + 1 < len(history) else ""
-                corp_id = int(row.get("corporation_id") or 0)
-                if corp_id > 0 and joined:
-                    event_rows.append((corp_id, "joined", joined, source_endpoint))
-                if corp_id > 0 and left:
-                    event_rows.append((corp_id, "departed", left, source_endpoint))
-                if joined and left:
-                    try:
-                        joined_dt = _parse_iso_datetime(joined)
-                        left_dt = _parse_iso_datetime(left)
-                        delta = abs((left_dt - joined_dt).days) if joined_dt and left_dt else 999999
-                        if delta <= 30:
-                            short_tenure += 1
-                    except ValueError:
-                        pass
-            current_corp_id = int(payload.get("corporation_id") or 0)
-            current_alliance_id = int(payload.get("alliance_id") or 0)
-            if current_corp_id > 0 and current_corp_id in corp_joined_payloads:
-                joined_endpoint, joined_payload = corp_joined_payloads[current_corp_id]
-                for row in _walk_nested_rows(joined_payload):
-                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
-                    if row_character_id != character_id:
-                        continue
-                    moved_at = row.get("start_date") or row.get("date") or row.get("joined_at")
-                    event_rows.append((current_corp_id, "joined", str(moved_at or ""), joined_endpoint))
-            if current_corp_id > 0 and current_corp_id in corp_departed_payloads:
-                departed_endpoint, departed_payload = corp_departed_payloads[current_corp_id]
-                for row in _walk_nested_rows(departed_payload):
-                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
-                    if row_character_id != character_id:
-                        continue
-                    moved_at = row.get("start_date") or row.get("date") or row.get("departed_at")
-                    event_rows.append((current_corp_id, "departed", str(moved_at or ""), departed_endpoint))
 
-            corplist_loaded = corp_list_payloads.get(current_corp_id) if current_corp_id > 0 else None
+    # Accumulate all rows across the character batch so we can batch-flush
+    # each table with a single executemany instead of 4+ round-trips per
+    # character.  For a typical batch of 100 characters this drops 400-800
+    # round-trips down to ~5.
+    cache_rows: list[tuple] = []
+    event_rows_all: list[tuple] = []
+    adjacency_rows_all: list[tuple] = []
+    processed_character_ids: list[int] = []
+
+    for character_id in pending:
+        loaded = character_payloads.get(character_id)
+        if not loaded:
+            continue
+        source_endpoint, payload = loaded
+        history = payload.get("corporation_history") if isinstance(payload.get("corporation_history"), list) else []
+        corp_hops = len(history)
+        short_tenure = 0
+        char_event_rows: list[tuple[int, str, str | None, str]] = []
+        for idx, row in enumerate(history):
+            joined = str(row.get("start_date") or "")
+            left = str(history[idx + 1].get("start_date") or "") if idx + 1 < len(history) else ""
+            corp_id = int(row.get("corporation_id") or 0)
+            if corp_id > 0 and joined:
+                char_event_rows.append((corp_id, "joined", joined, source_endpoint))
+            if corp_id > 0 and left:
+                char_event_rows.append((corp_id, "departed", left, source_endpoint))
+            if joined and left:
+                try:
+                    joined_dt = _parse_iso_datetime(joined)
+                    left_dt = _parse_iso_datetime(left)
+                    delta = abs((left_dt - joined_dt).days) if joined_dt and left_dt else 999999
+                    if delta <= 30:
+                        short_tenure += 1
+                except ValueError:
+                    pass
+        current_corp_id = int(payload.get("corporation_id") or 0)
+        current_alliance_id = int(payload.get("alliance_id") or 0)
+        if current_corp_id > 0 and current_corp_id in corp_joined_payloads:
+            joined_endpoint, joined_payload = corp_joined_payloads[current_corp_id]
+            for row in _walk_nested_rows(joined_payload):
+                row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                if row_character_id != character_id:
+                    continue
+                moved_at = row.get("start_date") or row.get("date") or row.get("joined_at")
+                char_event_rows.append((current_corp_id, "joined", str(moved_at or ""), joined_endpoint))
+        if current_corp_id > 0 and current_corp_id in corp_departed_payloads:
+            departed_endpoint, departed_payload = corp_departed_payloads[current_corp_id]
+            for row in _walk_nested_rows(departed_payload):
+                row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                if row_character_id != character_id:
+                    continue
+                moved_at = row.get("start_date") or row.get("date") or row.get("departed_at")
+                char_event_rows.append((current_corp_id, "departed", str(moved_at or ""), departed_endpoint))
+
+        corplist_loaded = corp_list_payloads.get(current_corp_id) if current_corp_id > 0 else None
+        if corplist_loaded:
+            corplist_endpoint, corplist_payload = corplist_loaded
+            for row in _walk_nested_rows(corplist_payload):
+                row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
+                if row_character_id != character_id:
+                    continue
+                joined_at = row.get("start_date") or row.get("date") or row.get("joined_at")
+                char_event_rows.append((current_corp_id, "joined", str(joined_at or ""), corplist_endpoint))
+
+        cache_rows.append((
+            character_id,
+            current_corp_id or None,
+            current_alliance_id or None,
+            corp_hops,
+            short_tenure,
+            0,
+            json_dumps_safe(payload),
+            source_endpoint,
+            fetched_at,
+            expires_at,
+        ))
+        processed_character_ids.append(character_id)
+
+        # Per-character event rows queued for the final batch flush.
+        for corp_id, event_type, event_at_raw, event_endpoint in char_event_rows:
+            event_dt = _parse_iso_datetime(event_at_raw)
+            event_rows_all.append((
+                character_id,
+                corp_id,
+                event_type,
+                event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None,
+                event_endpoint,
+                fetched_at,
+            ))
+
+        alliance_corp_ids: set[int] = set()
+        if current_corp_id > 0:
+            alliance_corp_ids.add(current_corp_id)
             if corplist_loaded:
-                corplist_endpoint, corplist_payload = corplist_loaded
+                _, corplist_payload = corplist_loaded
                 for row in _walk_nested_rows(corplist_payload):
-                    row_character_id = _extract_first_int(row, ["character_id", "characterID", "char_id", "id"])
-                    if row_character_id != character_id:
-                        continue
-                    joined_at = row.get("start_date") or row.get("date") or row.get("joined_at")
-                    event_rows.append((current_corp_id, "joined", str(joined_at or ""), corplist_endpoint))
+                    corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
+                    if corp_id and corp_id > 0:
+                        alliance_corp_ids.add(corp_id)
+        if current_alliance_id > 0:
+            allilist_loaded = allilist_payloads.get(current_alliance_id)
+            if allilist_loaded:
+                allilist_endpoint, allilist_payload = allilist_loaded
+                for row in _walk_nested_rows(allilist_payload):
+                    corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
+                    if corp_id and corp_id > 0:
+                        alliance_corp_ids.add(corp_id)
+                for corp_id in alliance_corp_ids:
+                    adjacency_rows_all.append((
+                        character_id, current_alliance_id, corp_id,
+                        allilist_endpoint, fetched_at, expires_at,
+                    ))
+            elif source_endpoint:
+                for corp_id in alliance_corp_ids:
+                    adjacency_rows_all.append((
+                        character_id, current_alliance_id, corp_id,
+                        source_endpoint, fetched_at, expires_at,
+                    ))
+        written += 1
 
-            cursor.execute(
+    # Flush all tables under a single transaction with batched writes.  We
+    # delete-then-insert so that event/adjacency state exactly matches the
+    # fresh payloads, as before.
+    if processed_character_ids:
+        with db.transaction() as (_, cursor):
+            # Sort for consistent lock ordering across concurrent runs.
+            cache_rows.sort(key=lambda r: r[0])
+            cursor.executemany(
                 """
                 INSERT INTO character_org_history_cache (
                     character_id, source, current_corporation_id, current_alliance_id,
@@ -329,75 +401,44 @@ def _enrich_org_history_cache(db: SupplyCoreDb, character_ids: list[int], user_a
                     fetched_at = VALUES(fetched_at),
                     expires_at = VALUES(expires_at)
                 """,
-                (
-                    character_id,
-                    current_corp_id or None,
-                    current_alliance_id or None,
-                    corp_hops,
-                    short_tenure,
-                    0,
-                    json_dumps_safe(payload),
-                    source_endpoint,
-                    fetched_at,
-                    expires_at,
-                ),
+                cache_rows,
+            )
+
+            # Single bulk DELETE for events + adjacency snapshots for all
+            # processed characters instead of N individual DELETEs.
+            placeholders = ",".join(["%s"] * len(processed_character_ids))
+            cursor.execute(
+                f"DELETE FROM character_org_history_events "
+                f"WHERE source = 'evewho' AND character_id IN ({placeholders})",
+                processed_character_ids,
             )
             cursor.execute(
-                "DELETE FROM character_org_history_events WHERE character_id = %s AND source = 'evewho'",
-                (character_id,),
+                f"DELETE FROM character_org_alliance_adjacency_snapshots "
+                f"WHERE source = 'evewho' AND character_id IN ({placeholders})",
+                processed_character_ids,
             )
-            for corp_id, event_type, event_at_raw, event_endpoint in event_rows:
-                event_dt = _parse_iso_datetime(event_at_raw)
-                cursor.execute(
+
+            if event_rows_all:
+                event_rows_all.sort(key=lambda r: (r[0], r[1]))
+                cursor.executemany(
                     """
                     INSERT INTO character_org_history_events (
                         character_id, source, corporation_id, event_type, event_at, source_endpoint, fetched_at
                     ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
                     """,
-                    (character_id, corp_id, event_type, event_dt.strftime("%Y-%m-%d %H:%M:%S") if event_dt else None, event_endpoint, fetched_at),
+                    event_rows_all,
                 )
 
-            cursor.execute(
-                "DELETE FROM character_org_alliance_adjacency_snapshots WHERE character_id = %s AND source = 'evewho'",
-                (character_id,),
-            )
-            alliance_corp_ids: set[int] = set()
-            if current_corp_id > 0:
-                alliance_corp_ids.add(current_corp_id)
-                if corplist_loaded:
-                    _, corplist_payload = corplist_loaded
-                    for row in _walk_nested_rows(corplist_payload):
-                        corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
-                        if corp_id and corp_id > 0:
-                            alliance_corp_ids.add(corp_id)
-            if current_alliance_id > 0:
-                allilist_loaded = allilist_payloads.get(current_alliance_id)
-                if allilist_loaded:
-                    allilist_endpoint, allilist_payload = allilist_loaded
-                    for row in _walk_nested_rows(allilist_payload):
-                        corp_id = _extract_first_int(row, ["corporation_id", "corporationID", "corp_id"])
-                        if corp_id and corp_id > 0:
-                            alliance_corp_ids.add(corp_id)
-                    for corp_id in alliance_corp_ids:
-                        cursor.execute(
-                            """
-                            INSERT INTO character_org_alliance_adjacency_snapshots (
-                                character_id, source, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
-                            ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
-                            """,
-                            (character_id, current_alliance_id, corp_id, allilist_endpoint, fetched_at, expires_at),
-                        )
-                elif source_endpoint:
-                    for corp_id in alliance_corp_ids:
-                        cursor.execute(
-                            """
-                            INSERT INTO character_org_alliance_adjacency_snapshots (
-                                character_id, source, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
-                            ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
-                            """,
-                            (character_id, current_alliance_id, corp_id, source_endpoint, fetched_at, expires_at),
-                        )
-            written += 1
+            if adjacency_rows_all:
+                adjacency_rows_all.sort(key=lambda r: (r[0], r[2]))
+                cursor.executemany(
+                    """
+                    INSERT INTO character_org_alliance_adjacency_snapshots (
+                        character_id, source, alliance_id, corporation_id, source_endpoint, fetched_at, expires_at
+                    ) VALUES (%s, 'evewho', %s, %s, %s, %s, %s)
+                    """,
+                    adjacency_rows_all,
+                )
     return written
 
 
