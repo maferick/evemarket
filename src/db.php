@@ -13375,6 +13375,32 @@ function db_killmail_overview_page(array $filters = []): array
     $search = trim((string) ($filters['search'] ?? ''));
     $startDate = trim((string) ($filters['start_date'] ?? '2024-01-01 00:00:00'));
 
+    // Keyset pagination support (no-search path only). Without a cursor this
+    // still runs as "keyset mode at the head" — LIMIT pageSize+1 with no extra
+    // WHERE clause — so the head view also gets a next-cursor for the Next
+    // button. When a cursor IS provided, pagination is driven by
+    // (effective_killmail_at, sequence_id) instead of LIMIT/OFFSET so deep-page
+    // navigation never scans skipped rows.
+    //   direction='next'  → rows strictly older than the cursor
+    //   direction='prev'  → rows strictly newer than the cursor (then reversed)
+    // $skipCount lets callers opt out of the 1.5M-row COUNT(*) when they plan
+    // to fetch the total asynchronously (see public/api/killmail-intelligence/count.php).
+    $cursor = trim((string) ($filters['cursor'] ?? ''));
+    $direction = (string) ($filters['direction'] ?? 'next');
+    if ($direction !== 'prev') {
+        $direction = 'next';
+    }
+    $skipCount = (bool) ($filters['skip_count'] ?? false);
+    $useKeyset = $search === '';
+    [$cursorAt, $cursorSeq] = db_killmail_overview_parse_cursor($cursor);
+    $hasCursor = $cursorAt !== null && $cursorSeq > 0;
+    if (!$hasCursor) {
+        // Keyset still active for fetch-limit and cursor generation, but the
+        // WHERE clause below only fires when $hasCursor is true.
+        $cursorAt = null;
+        $cursorSeq = 0;
+    }
+
     // --- Base predicates (apply to both COUNT and row fetch) ---
     //
     // This function used to wrap killmail_events in a GROUP BY derived table
@@ -13478,24 +13504,32 @@ function db_killmail_overview_page(array $filters = []): array
     // idx_killmail_mailtype_effective_seq this is a pure range scan with no
     // joins, no temp tables and no filesort. This is the change that fixes
     // the killmail-intelligence page timing out during backload.
-    if ($searchConditions === []) {
-        $countWhereSql = ' WHERE ' . implode(' AND ', $baseConditions);
-        $countRow = db_select_one(
-            'SELECT COUNT(*) AS total_items FROM killmail_events e' . $countWhereSql,
-            $baseParams
-        );
-    } else {
-        $countConditions = array_merge($baseConditions, $searchConditions);
-        $countWhereSql = ' WHERE ' . implode(' AND ', $countConditions);
-        $countRow = db_select_one(
-            'SELECT COUNT(*) AS total_items FROM killmail_events e' . $displayJoinsSql . $countWhereSql,
-            array_merge($baseParams, $searchParams)
-        );
+    //
+    // When $skipCount is true we return $totalItems=null and the caller fills
+    // it in later via an async AJAX fetch. The keyset path always sets
+    // $skipCount=true because "page N of M" is meaningless with cursor paging.
+    $totalItems = null;
+    $totalPages = null;
+    if (!$skipCount && !$useKeyset) {
+        if ($searchConditions === []) {
+            $countWhereSql = ' WHERE ' . implode(' AND ', $baseConditions);
+            $countRow = db_select_one(
+                'SELECT COUNT(*) AS total_items FROM killmail_events e' . $countWhereSql,
+                $baseParams
+            );
+        } else {
+            $countConditions = array_merge($baseConditions, $searchConditions);
+            $countWhereSql = ' WHERE ' . implode(' AND ', $countConditions);
+            $countRow = db_select_one(
+                'SELECT COUNT(*) AS total_items FROM killmail_events e' . $displayJoinsSql . $countWhereSql,
+                array_merge($baseParams, $searchParams)
+            );
+        }
+        $totalItems = (int) ($countRow['total_items'] ?? 0);
+        $totalPages = max(1, (int) ceil($totalItems / $pageSize));
+        $page = min($page, $totalPages);
+        $offset = ($page - 1) * $pageSize;
     }
-    $totalItems = (int) ($countRow['total_items'] ?? 0);
-    $totalPages = max(1, (int) ceil($totalItems / $pageSize));
-    $page = min($page, $totalPages);
-    $offset = ($page - 1) * $pageSize;
 
     // --- Row fetch ---
     // Needs the display joins (the SELECT references their columns) but the
@@ -13505,8 +13539,30 @@ function db_killmail_overview_page(array $filters = []): array
     // this view: the old UNION-derived tracked table declared them but never
     // populated them (it only covered the victim side).
     $rowConditions = array_merge($baseConditions, $searchConditions);
-    $rowWhereSql = ' WHERE ' . implode(' AND ', $rowConditions);
     $rowParams = array_merge($baseParams, $searchParams);
+
+    // Keyset predicate on (effective_killmail_at, sequence_id). "Next" walks
+    // older rows; "prev" walks newer ones (then we reverse the result set in
+    // PHP so output stays newest-first). Both branches use the existing
+    // idx_killmail_mailtype_effective_seq index for a pure range scan.
+    $orderSql = 'ORDER BY e.effective_killmail_at DESC, e.sequence_id DESC, e.killmail_id DESC';
+    if ($useKeyset && $hasCursor) {
+        if ($direction === 'prev') {
+            $rowConditions[] = '(e.effective_killmail_at > ? OR (e.effective_killmail_at = ? AND e.sequence_id > ?))';
+            $orderSql = 'ORDER BY e.effective_killmail_at ASC, e.sequence_id ASC, e.killmail_id ASC';
+        } else {
+            $rowConditions[] = '(e.effective_killmail_at < ? OR (e.effective_killmail_at = ? AND e.sequence_id < ?))';
+        }
+        $rowParams[] = $cursorAt;
+        $rowParams[] = $cursorAt;
+        $rowParams[] = $cursorSeq;
+    }
+    $rowWhereSql = ' WHERE ' . implode(' AND ', $rowConditions);
+    // Fetch one extra row to detect has_next (or has_prev when going backward).
+    $fetchLimit = $useKeyset ? $pageSize + 1 : $pageSize;
+    $limitSql = $useKeyset
+        ? "LIMIT {$fetchLimit}"
+        : "LIMIT {$pageSize} OFFSET {$offset}";
 
     $rows = db_select(
         "SELECT
@@ -13517,6 +13573,7 @@ function db_killmail_overview_page(array $filters = []): array
             e.killmail_time,
             e.uploaded_at,
             e.created_at,
+            e.effective_killmail_at,
             e.victim_character_id,
             e.victim_corporation_id,
             e.victim_alliance_id,
@@ -13563,20 +13620,184 @@ function db_killmail_overview_page(array $filters = []): array
          FROM killmail_events e
          {$displayJoinsSql}
          {$rowWhereSql}
-         ORDER BY e.effective_killmail_at DESC, e.sequence_id DESC, e.killmail_id DESC
-         LIMIT {$pageSize} OFFSET {$offset}",
+         {$orderSql}
+         {$limitSql}",
         $rowParams
     );
 
-    return [
+    // Keyset post-processing: drop the "+1" probe row, detect has_more, flip
+    // the "prev" direction back to newest-first, and compute the cursors the
+    // UI needs for the next round of navigation.
+    //
+    // Semantics:
+    //   hasMore=true means "extra row was returned, more data exists in the
+    //   direction we were walking". For direction='next' that means more
+    //   OLDER rows; for direction='prev' that means more NEWER rows.
+    //   hasCursor=false means we're at the head (newest rows) — so Previous
+    //   is hidden and Next is shown whenever there are more older rows.
+    $hasMore = false;
+    $nextCursor = null;
+    $prevCursor = null;
+    $showNext = false;
+    $showPrev = false;
+    if ($useKeyset) {
+        if (count($rows) > $pageSize) {
+            $hasMore = true;
+            $rows = array_slice($rows, 0, $pageSize);
+        }
+        if ($direction === 'prev') {
+            $rows = array_reverse($rows);
+        }
+        if ($rows !== []) {
+            $firstRow = $rows[0];
+            $lastRow = $rows[count($rows) - 1];
+            $prevCursor = db_killmail_overview_build_cursor($firstRow);
+            $nextCursor = db_killmail_overview_build_cursor($lastRow);
+        }
+        if (!$hasCursor) {
+            // Head view: no Previous, Next only if more older rows exist.
+            $showPrev = false;
+            $showNext = $hasMore;
+        } elseif ($direction === 'next') {
+            // Walking older: Previous always (we came from newer). Next only
+            // if more older rows remain.
+            $showPrev = true;
+            $showNext = $hasMore;
+        } else {
+            // Walking newer: Next always (we came from older). Previous only
+            // if more newer rows remain.
+            $showPrev = $hasMore;
+            $showNext = true;
+        }
+    }
+
+    $result = [
         'rows' => $rows,
         'page' => $page,
         'page_size' => $pageSize,
         'total_items' => $totalItems,
         'total_pages' => $totalPages,
-        'showing_from' => $totalItems > 0 ? $offset + 1 : 0,
-        'showing_to' => min($offset + $pageSize, $totalItems),
+        'use_keyset' => $useKeyset,
+        'direction' => $direction,
+        'next_cursor' => $showNext ? $nextCursor : null,
+        'prev_cursor' => $showPrev ? $prevCursor : null,
     ];
+    if ($totalItems !== null) {
+        $result['showing_from'] = $totalItems > 0 ? $offset + 1 : 0;
+        $result['showing_to'] = min($offset + $pageSize, $totalItems);
+    } else {
+        $result['showing_from'] = $rows === [] ? 0 : 1;
+        $result['showing_to'] = count($rows);
+    }
+
+    return $result;
+}
+
+/**
+ * Parse the opaque cursor used by the killmail overview keyset pagination.
+ *
+ * Format: "{Y-m-d H:i:s}|{sequence_id}" URL-safe-base64 encoded. Returning
+ * [null, 0] means "no valid cursor" and the caller falls back to page 1.
+ */
+function db_killmail_overview_parse_cursor(string $cursor): array
+{
+    $cursor = trim($cursor);
+    if ($cursor === '') {
+        return [null, 0];
+    }
+    // Opaque URL-safe base64 so stray characters don't slip into the SQL
+    // parameters. The structure inside is still a plain "at|seq" pair.
+    $decoded = base64_decode(strtr($cursor, '-_', '+/'), true);
+    if ($decoded === false) {
+        return [null, 0];
+    }
+    $parts = explode('|', $decoded, 2);
+    if (count($parts) !== 2) {
+        return [null, 0];
+    }
+    $at = trim($parts[0]);
+    $seq = (int) $parts[1];
+    if ($at === '' || $seq <= 0) {
+        return [null, 0];
+    }
+    // Reject obviously malformed datetimes so we don't pass garbage to MySQL.
+    $ts = strtotime($at . ' UTC');
+    if ($ts === false) {
+        return [null, 0];
+    }
+    return [$at, $seq];
+}
+
+/**
+ * Build the opaque cursor string for a killmail row. Pairs with
+ * db_killmail_overview_parse_cursor().
+ */
+function db_killmail_overview_build_cursor(array $row): ?string
+{
+    $at = isset($row['effective_killmail_at']) ? trim((string) $row['effective_killmail_at']) : '';
+    // effective_killmail_at is a generated column; fall back to killmail_time
+    // then created_at for rows where the cursor column was not selected.
+    if ($at === '') {
+        $at = isset($row['killmail_time']) ? trim((string) $row['killmail_time']) : '';
+    }
+    if ($at === '') {
+        $at = isset($row['created_at']) ? trim((string) $row['created_at']) : '';
+    }
+    $seq = isset($row['sequence_id']) ? (int) $row['sequence_id'] : 0;
+    if ($at === '' || $seq <= 0) {
+        return null;
+    }
+    return rtrim(strtr(base64_encode($at . '|' . $seq), '+/', '-_'), '=');
+}
+
+/**
+ * Count-only variant used by the async count endpoint. Shares filter logic
+ * with db_killmail_overview_page() but skips the row SELECT entirely.
+ */
+function db_killmail_overview_total_count(array $filters = []): int
+{
+    db_killmail_overview_schema_ensure();
+
+    $allianceId = max(0, (int) ($filters['alliance_id'] ?? 0));
+    $corporationId = max(0, (int) ($filters['corporation_id'] ?? 0));
+    $trackedOnly = (bool) ($filters['tracked_only'] ?? false);
+    $mailType = in_array((string) ($filters['mail_type'] ?? 'loss'), ['kill', 'loss', ''], true) ? (string) ($filters['mail_type'] ?? 'loss') : 'loss';
+    $startDate = trim((string) ($filters['start_date'] ?? '2024-01-01 00:00:00'));
+
+    $conditions = [];
+    $params = [];
+    if ($allianceId > 0) {
+        $conditions[] = 'e.victim_alliance_id = ?';
+        $params[] = $allianceId;
+    }
+    if ($corporationId > 0) {
+        $conditions[] = 'e.victim_corporation_id = ?';
+        $params[] = $corporationId;
+    }
+    if ($mailType !== '') {
+        $conditions[] = 'e.mail_type = ?';
+        $params[] = $mailType;
+    }
+    $conditions[] = 'e.effective_killmail_at >= ?';
+    $params[] = $startDate;
+    if ($trackedOnly) {
+        $conditions[] = '(
+            e.victim_alliance_id IN (
+                SELECT contact_id FROM corp_contacts
+                WHERE contact_type = \'alliance\' AND standing > 0
+            )
+            OR e.victim_corporation_id IN (
+                SELECT contact_id FROM corp_contacts
+                WHERE contact_type = \'corporation\' AND standing > 0
+            )
+        )';
+    }
+
+    $row = db_select_one(
+        'SELECT COUNT(*) AS total_items FROM killmail_events e WHERE ' . implode(' AND ', $conditions),
+        $params
+    );
+    return (int) ($row['total_items'] ?? 0);
 }
 
 function db_killmail_overview_duplicate_identity_check(array $filters = []): array
