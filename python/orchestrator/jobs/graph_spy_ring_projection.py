@@ -96,11 +96,12 @@ def run_graph_spy_ring_projection(
         cypher_node = "MATCH (n:Character) RETURN id(n) AS id"
         cypher_rel = f"""
         MATCH (a:Character)-[r:CO_OCCURS_WITH]->(b:Character)
-        WHERE r.count >= {COPRESENCE_MIN_COUNT}
-        RETURN id(a) AS source, id(b) AS target, r.count AS weight, 'copresence' AS type
+        WHERE r.occurrence_count >= {COPRESENCE_MIN_COUNT}
+        RETURN id(a) AS source, id(b) AS target, r.weight AS weight, 'copresence' AS type
         UNION ALL
-        MATCH (a:Character)-[r:CROSSED_SIDES]->(b:Character)
-        RETURN id(a) AS source, id(b) AS target, r.count AS weight, 'cross_side' AS type
+        MATCH (a:Character)-[r:DIRECT_COMBAT]->(b:Character)
+        WHERE r.count >= {CROSS_SIDE_MIN_COUNT}
+        RETURN id(a) AS source, id(b) AS target, toFloat(r.count) AS weight, 'cross_side' AS type
         """
 
         # Try GDS cypher projection
