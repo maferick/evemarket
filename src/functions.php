@@ -11875,7 +11875,15 @@ function killmail_overview_data(): array
         'mail_type' => in_array($_GET['mail_type'] ?? 'loss', ['kill', 'loss', ''], true) ? ($_GET['mail_type'] ?? 'loss') : 'loss',
         'page' => max(1, (int) ($_GET['page'] ?? 1)),
         'page_size' => $pageSize,
+        'cursor' => trim((string) ($_GET['cursor'] ?? '')),
+        'direction' => ($_GET['dir'] ?? 'next') === 'prev' ? 'prev' : 'next',
     ];
+    // Fast path for the default list (no free-text search): use keyset
+    // pagination driven by (effective_killmail_at, sequence_id) and skip the
+    // COUNT(*) on initial render. The total gets filled in asynchronously via
+    // /api/killmail-intelligence/count.php so the 1.5M-row COUNT no longer
+    // blocks the page.
+    $filters['skip_count'] = $filters['search'] === '';
     // Cache all views that don't have a free-text search query. Free-text search has
     // too many possible combinations to cache usefully; everything else (pagination,
     // alliance/corp/type filters) is keyed explicitly so each combination gets its
@@ -11926,6 +11934,10 @@ function killmail_overview_data(): array
                     'total_items' => 0,
                     'showing_from' => 0,
                     'showing_to' => 0,
+                    'use_keyset' => false,
+                    'direction' => 'next',
+                    'next_cursor' => null,
+                    'prev_cursor' => null,
                 ],
                 'coverage' => [
                     'start_date' => $overviewStartDate,
@@ -12314,16 +12326,26 @@ function killmail_overview_data(): array
                 'page' => (int) ($listing['page'] ?? 1),
                 'page_size' => (int) ($listing['page_size'] ?? $pageSize),
                 'page_size_options' => $allowedPageSizes,
-                'total_pages' => (int) ($listing['total_pages'] ?? 1),
-                'total_items' => (int) ($listing['total_items'] ?? 0),
+                // total_pages / total_items are null on the keyset fast path —
+                // the UI should render them as "counting…" until the async
+                // count endpoint returns.
+                'total_pages' => $listing['total_pages'] ?? null,
+                'total_items' => $listing['total_items'] ?? null,
                 'showing_from' => (int) ($listing['showing_from'] ?? 0),
                 'showing_to' => (int) ($listing['showing_to'] ?? 0),
+                'use_keyset' => (bool) ($listing['use_keyset'] ?? false),
+                'direction' => (string) ($listing['direction'] ?? 'next'),
+                'next_cursor' => isset($listing['next_cursor']) ? (string) $listing['next_cursor'] : null,
+                'prev_cursor' => isset($listing['prev_cursor']) ? (string) $listing['prev_cursor'] : null,
             ],
             'empty_message' => $emptyMessage,
         ];
     };
 
     if ($useCache) {
+        // Keyset cursor + direction are part of the cache key so Next/Previous
+        // navigation each get their own entry. When there's no cursor we fall
+        // back to the old page-number key for the default (head) view.
         $cacheKey = [
             'page', $filters['page'],
             'size', $filters['page_size'],
@@ -12331,6 +12353,8 @@ function killmail_overview_data(): array
             'alliance', $filters['alliance_id'],
             'corp', $filters['corporation_id'],
             'tracked', (int) $filters['tracked_only'],
+            'cursor', $filters['cursor'],
+            'dir', $filters['direction'],
         ];
         return supplycore_cache_aside('killmail_overview', $cacheKey, supplycore_cache_ttl('killmail_summary'), $resolver, [
             'dependencies' => ['killmail_overview'],
