@@ -1,8 +1,8 @@
 # Adding a Job to the Scheduler
 
-This guide explains how to register a new Python job so that it runs on a recurring schedule, appears in the settings and log-viewer UI, and integrates with the worker pool.
+This guide explains how to register a new Python job so that it runs on a recurring schedule.
 
-A fully registered job touches **eleven registration points** across 8 files. Skip any and the job will either not run, not display, or silently fail.
+A new job requires **four registration points** across 4 Python files. The loop runner automatically creates database schedule rows and reconciles state on startup — no PHP or migration changes needed for the job to run.
 
 ---
 
@@ -82,7 +82,7 @@ All jobs must return a dict with at least:
 | `summary` | string | yes | One-line human-readable description |
 | `rows_processed` | int | no | Defaults to 0 |
 | `rows_written` | int | no | Defaults to 0 |
-| `duration_ms` | int | no | Auto-filled by worker pool if missing |
+| `duration_ms` | int | no | Auto-filled by loop runner if missing |
 | `error_text` | string | no | Set when status is `"failed"` |
 | `meta` | dict | no | Processor-specific data (must be JSON-safe) |
 | `warnings` | list[str] | no | Non-fatal issues |
@@ -150,8 +150,6 @@ Edit `python/orchestrator/worker_registry.py` and add an entry to `WORKER_JOB_DE
     "queue_name": "sync",              # "sync" or "compute"
     "priority": "normal",             # "high", "normal", or "low"
     "freshness_sensitivity": "background",  # see below
-    "min_interval_seconds": 600,       # minimum gap between runs
-    "max_staleness_seconds": 1800,     # after this, job is overdue
     "cooldown_seconds": 10,            # pause after completion
     "runtime_class": "sync_light",     # resource profile hint
     "resource_cost": "low",            # "low", "medium", or "high"
@@ -162,10 +160,28 @@ Edit `python/orchestrator/worker_registry.py` and add an entry to `WORKER_JOB_DE
     "memory_limit_mb": 384,
     "retry_delay_seconds": 30,
     "max_attempts": 4,
+    "lane": "realtime",               # execution lane (see below)
 },
 ```
 
+The loop runner automatically creates and manages `sync_schedules` database rows from
+`WORKER_JOB_DEFINITIONS` on startup — no migration file needed.
+
 ### Key fields
+
+**`lane`**
+Which execution lane (systemd service) runs this job:
+
+| Lane | Purpose |
+|------|---------|
+| `realtime` | Latency-sensitive syncs, dashboards, alerts |
+| `ingestion` | ESI/EveWho API-bound syncs |
+| `compute-graph` | Neo4j graph analytics pipeline |
+| `compute-battle` | Battle rollups, theater intelligence, suspicion scoring |
+| `compute-behavioral` | Behavioral scoring, cohort baselines, temporal detection |
+| `compute-cip` | Character Intelligence Profile correlation/event pipeline |
+| `compute-misc` | Alliance dossiers, market intelligence, map compute |
+| `maintenance` | Cleanup, repair, recalibration |
 
 **`freshness_sensitivity`**
 - `"immediate"` — high-priority data (market prices, alliance stock). The scheduler treats these as urgent and dispatches them ahead of background work.
@@ -203,9 +219,28 @@ Hint for the resource scheduler:
 
 ---
 
-## 5. Register in the PHP authoritative registry
+## That's it — the job will run
 
-Edit `src/functions.php`, function `supplycore_authoritative_job_registry()`:
+After completing the 4 steps above, the loop runner will:
+1. Discover the job from `WORKER_JOB_DEFINITIONS` on startup
+2. Auto-create a `sync_schedules` row with `auto_managed = 1`
+3. Dispatch it according to its lane, dependencies, and schedule
+
+Missing processor registry bindings are surfaced by startup audit warnings so
+one broken job does not halt the entire runner.
+
+---
+
+## Optional: UI integration
+
+These additional registration points are **not required** for the job to run, but
+are needed if you want the job to appear in the settings UI, dashboard, and manual
+testing scripts.
+
+### a) PHP authoritative registry (`src/functions.php`)
+
+Add an entry to `supplycore_authoritative_job_registry()` for the job to appear in
+the settings and log-viewer UI:
 
 ```php
 'my_new_sync' => [
@@ -228,63 +263,7 @@ Edit `src/functions.php`, function `supplycore_authoritative_job_registry()`:
 ],
 ```
 
-If your job key starts with `compute_` and is a schedulable Python job, also add an entry to `worker_job_registry_definitions()` in the same file:
-
-```php
-'compute_my_new_thing' => [
-    'workload_class' => 'compute',
-    'execution_mode' => 'python',
-    'queue_name' => 'compute',
-    'priority' => 'normal',
-    'interval_seconds' => 900,
-    'timeout_seconds' => 300,
-    'memory_limit_mb' => 768,
-    'retry_delay_seconds' => 60,
-    'max_attempts' => 4,
-],
-```
-
-> **Note:** The processor registry binding is required for every Python job that is expected to execute (compute and sync). Missing bindings are surfaced by startup audit warnings so one broken job does not halt the entire runner.
-
-### Field reference
-
-| Field | Values | Effect |
-|-------|--------|--------|
-| `enabled_by_default` | `true`/`false` | Whether the job runs automatically after deployment |
-| `schedulable` | `true`/`false` | `false` for child tasks triggered by a parent |
-| `user_visible` | `true`/`false` | Shows in log-viewer and settings UI |
-| `concurrency_policy` | `single`/`background` | `single` = one instance at a time |
-| `parent_job_key` | string | Set for child tasks (e.g., graph sub-phases) |
-
----
-
-## 6. Create the schedule migration (optional bootstrap)
-
-Create `database/migrations/YYYYMMDD_<job_key>_schedule.sql`:
-
-```sql
-INSERT INTO sync_schedules (job_key, enabled, interval_seconds, execution_mode)
-VALUES ('my_new_sync', 0, 600, 'python')
-ON DUPLICATE KEY UPDATE enabled = enabled;
-```
-
-When using the loop runner, schedule rows are now auto-created from `WORKER_JOB_DEFINITIONS` on startup.  
-Migration-driven inserts are therefore optional and mainly useful for explicit bootstrap control in managed environments.
-
-If you do insert rows via migration:
-- set `auto_managed = 1` for rows that the Python runner should reconcile automatically
-- set `auto_managed = 0` for rows intentionally operator-managed in Settings
-- preserve existing `enabled` values on re-run to avoid overriding operator choices
-
-If the job needs its own tables, create a separate migration for the schema.
-
----
-
-## 7. Additional registration points
-
-These are easy to miss but important for full integration.
-
-### a) Dashboard group mapping (`src/functions.php`)
+### b) Dashboard group mapping (`src/functions.php`)
 
 Search for `=> 'Intelligence Graph'` (or the appropriate group) and add your job:
 
@@ -292,15 +271,16 @@ Search for `=> 'Intelligence Graph'` (or the appropriate group) and add your job
 'my_new_sync' => 'Intelligence Graph',
 ```
 
-### b) Stage array (`src/db.php`)
+### c) Stage array (`src/db.php`)
 
-Search for `$stageJobKeys` and add the job to the correct stage:
+Search for `$stageJobKeys` and add the job to the correct stage for dashboard
+stage-health visualization:
 
 ```php
 'graph' => [..., 'my_new_sync'],
 ```
 
-### c) Reset & rebuild script (`scripts/reset_and_rebuild.sh`)
+### d) Reset & rebuild script (`scripts/reset_and_rebuild.sh`)
 
 Add a `run_job` call in the correct phase:
 
@@ -308,7 +288,7 @@ Add a `run_job` call in the correct phase:
 run_job "my_new_sync" "My New Sync"
 ```
 
-### d) Test harness (`scripts/test-all-sync-jobs.sh`)
+### e) Test harness (`scripts/test-all-sync-jobs.sh`)
 
 If the job is a sync job, add it to the `SYNC_JOBS` array so it's included in the smoke-test sweep:
 
@@ -319,7 +299,7 @@ SYNC_JOBS=(
 )
 ```
 
-### e) Documentation
+### f) Documentation
 
 - `docs/AUTHORITATIVE_JOB_MATRIX.md` — add a row to the job matrix table
 - `docs/CLI_MANUAL.md` — add to the job reference table AND the numbered rebuild list
@@ -328,27 +308,19 @@ SYNC_JOBS=(
 
 ## Checklist
 
-Before merging, verify **all eleven** registration points:
+Before merging, verify the **4 required** registration points:
 
-**Python (4 files):**
+**Required (job will not run without these):**
 - [ ] `python/orchestrator/jobs/<job_key>.py` — processor exists and returns correct result shape
 - [ ] `python/orchestrator/jobs/__init__.py` — function is exported
 - [ ] `python/orchestrator/processor_registry.py` — import + job-key set + dispatch map
-- [ ] `python/orchestrator/worker_registry.py` — in `WORKER_JOB_DEFINITIONS`
+- [ ] `python/orchestrator/worker_registry.py` — in `WORKER_JOB_DEFINITIONS` with lane, deps, timeout
 
-**PHP (2 files, 3–4 entries):**
-- [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()`
-- [ ] `src/functions.php` — in `worker_job_registry_definitions()` *(only for `compute_*` Python jobs)*
-- [ ] `src/functions.php` — in dashboard group mapping
-- [ ] `src/db.php` — in `$stageJobKeys` array
-
-**Database (1 file):**
-- [ ] `database/migrations/` — schedule row INSERT + any new tables
-
-**Ops & Docs (4 files):**
-- [ ] `scripts/reset_and_rebuild.sh` — in rebuild sequence
-- [ ] `scripts/test-all-sync-jobs.sh` — in `SYNC_JOBS` array *(sync jobs only)*
+**Optional (for UI/testing/docs):**
+- [ ] `src/functions.php` — in `supplycore_authoritative_job_registry()` *(for settings/log-viewer UI)*
+- [ ] `src/functions.php` — in dashboard group mapping *(for dashboard categorization)*
+- [ ] `src/db.php` — in `$stageJobKeys` array *(for dashboard stage health)*
+- [ ] `scripts/reset_and_rebuild.sh` — in rebuild sequence *(for manual rebuilds)*
+- [ ] `scripts/test-all-sync-jobs.sh` — in `SYNC_JOBS` array *(for smoke tests)*
 - [ ] `docs/AUTHORITATIVE_JOB_MATRIX.md` — row in job matrix
 - [ ] `docs/CLI_MANUAL.md` — in reference table + numbered rebuild list
-
-Missing any one of these will cause the job to either not run, not display in the UI, or fail silently at runtime.
