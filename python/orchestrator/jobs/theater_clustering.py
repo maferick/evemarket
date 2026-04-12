@@ -62,6 +62,10 @@ DEFAULT_MAX_GATE_DISTANCE = 5
 DEFAULT_GATE_MERGE_MIN_OVERLAP = 0.05
 DEFAULT_HIGHSEC_THRESHOLD = 0.45
 
+# Lookback window: only cluster battles from the last N hours.  Older theaters
+# are auto-locked so they are never recalculated unless manually unlocked.
+DEFAULT_LOOKBACK_HOURS = 48  # ~2 days
+
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
@@ -136,13 +140,36 @@ def _load_clustering_settings(db: SupplyCoreDb) -> dict[str, Any]:
         "theater_min_participants": int(raw.get("theater_min_participants", MIN_THEATER_PARTICIPANTS)),
         "theater_absorption_margin_seconds": int(raw.get("theater_absorption_margin_seconds", ABSORPTION_MARGIN_SECONDS)),
         "theater_min_participant_overlap": float(raw.get("theater_min_participant_overlap", MIN_PARTICIPANT_OVERLAP)),
+        # Lookback window — only battles within this window are re-clustered
+        "theater_clustering_lookback_hours": int(raw.get("theater_clustering_lookback_hours", DEFAULT_LOOKBACK_HOURS)),
     }
 
 
-def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
-    """Load eligible battles, excluding those already assigned to locked theaters."""
+def _load_battles(db: SupplyCoreDb, cutoff: str | None = None) -> list[dict[str, Any]]:
+    """Load eligible battles within the lookback window.
+
+    Only battles whose started_at >= *cutoff* are loaded.  Battles already
+    assigned to a locked theater are always excluded regardless of age.
+    """
+    where_clauses = ["br.participant_count >= %s"]
+    params: list[Any] = [MIN_THEATER_PARTICIPANTS]
+
+    if cutoff is not None:
+        where_clauses.append("br.started_at >= %s")
+        params.append(cutoff)
+
+    where_clauses.append(
+        """br.battle_id NOT IN (
+              SELECT tb.battle_id
+              FROM theater_battles tb
+              INNER JOIN theaters t ON t.theater_id = tb.theater_id
+              WHERE t.locked_at IS NOT NULL
+          )"""
+    )
+
+    where_sql = " AND ".join(where_clauses)
     return db.fetch_all(
-        """
+        f"""
         SELECT
             br.battle_id,
             br.system_id,
@@ -157,16 +184,10 @@ def _load_battles(db: SupplyCoreDb) -> list[dict[str, Any]]:
             rs.security
         FROM battle_rollups br
         INNER JOIN ref_systems rs ON rs.system_id = br.system_id
-        WHERE br.participant_count >= %s
-          AND br.battle_id NOT IN (
-              SELECT tb.battle_id
-              FROM theater_battles tb
-              INNER JOIN theaters t ON t.theater_id = tb.theater_id
-              WHERE t.locked_at IS NOT NULL
-          )
+        WHERE {where_sql}
         ORDER BY br.started_at ASC
         """,
-        (MIN_THEATER_PARTICIPANTS,),
+        tuple(params),
     )
 
 
@@ -1001,51 +1022,39 @@ def _flush_theaters(
     theaters: list[dict[str, Any]],
     battle_assignments: list[tuple[str, str, int, float, str | None]],
     system_rows: list[tuple[str, int, str | None, int, float, int, float, str | None]],
+    cutoff: str | None = None,
 ) -> int:
-    """Write theater data to MariaDB. Returns total rows written."""
+    """Write theater data to MariaDB. Returns total rows written.
+
+    When *cutoff* is given, only unlocked theaters whose start_time >= cutoff
+    are eligible for replacement.  Theaters outside the window (older) and
+    locked theaters are never touched.
+    """
     rows_written = 0
 
     # Collect new theater IDs so we can prune stale rows
     new_theater_ids = {t["theater_id"] for t in theaters}
 
     with db.transaction() as (_, cursor):
-        # Collect locked theater IDs — these must be preserved even if
-        # they don't appear in the new clustering output (their battles
-        # were excluded from re-clustering).
-        cursor.execute("SELECT theater_id FROM theaters WHERE locked_at IS NOT NULL")
-        locked_ids = {str(r["theater_id"]) for r in cursor.fetchall()}
-        preserve_ids = new_theater_ids | locked_ids
-
-        # Remove theaters/battles/systems that no longer exist, but
-        # preserve analysis-computed fields (total_kills, total_isk,
-        # anomaly_score) for theaters that are being re-clustered.
-        # Also preserve locked theaters.
-        if preserve_ids:
-            id_placeholders = ",".join(["%s"] * len(preserve_ids))
-            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
-            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
-            cursor.execute(f"DELETE FROM theaters WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
-            # Clean up orphaned analysis rows from tables populated by
-            # theater_analysis.  These tables are keyed by theater_id and
-            # would otherwise leave dangling rows when a theater is split
-            # or its battle composition changes (producing a new theater_id).
-            for tbl in (
-                "theater_alliance_summary",
-                "theater_participants",
-                "theater_timeline",
-                "theater_turning_points",
-                "theater_structure_kills",
-                "theater_side_composition",
-            ):
-                try:
-                    cursor.execute(f"DELETE FROM {tbl} WHERE theater_id NOT IN ({id_placeholders})", tuple(preserve_ids))
-                except Exception:
-                    # Table may not exist on older schemas — skip silently
-                    pass
+        # Identify unlocked theater IDs that fall within the processing
+        # window — these are the ones we are allowed to replace.
+        if cutoff is not None:
+            cursor.execute(
+                "SELECT theater_id FROM theaters WHERE locked_at IS NULL AND start_time >= %s",
+                (cutoff,),
+            )
+            stale_window_ids = {str(r["theater_id"]) for r in cursor.fetchall()}
         else:
-            cursor.execute("DELETE FROM theater_systems")
-            cursor.execute("DELETE FROM theater_battles")
-            cursor.execute("DELETE FROM theaters")
+            cursor.execute("SELECT theater_id FROM theaters WHERE locked_at IS NULL")
+            stale_window_ids = {str(r["theater_id"]) for r in cursor.fetchall()}
+
+        # IDs to delete = old unlocked theaters in the window that are NOT in the new output
+        delete_ids = stale_window_ids - new_theater_ids
+        if delete_ids:
+            id_placeholders = ",".join(["%s"] * len(delete_ids))
+            cursor.execute(f"DELETE FROM theater_systems WHERE theater_id IN ({id_placeholders})", tuple(delete_ids))
+            cursor.execute(f"DELETE FROM theater_battles WHERE theater_id IN ({id_placeholders})", tuple(delete_ids))
+            cursor.execute(f"DELETE FROM theaters WHERE theater_id IN ({id_placeholders})", tuple(delete_ids))
             for tbl in (
                 "theater_alliance_summary",
                 "theater_participants",
@@ -1055,7 +1064,7 @@ def _flush_theaters(
                 "theater_side_composition",
             ):
                 try:
-                    cursor.execute(f"DELETE FROM {tbl}")
+                    cursor.execute(f"DELETE FROM {tbl} WHERE theater_id IN ({id_placeholders})", tuple(delete_ids))
                 except Exception:
                     pass
 
@@ -1138,6 +1147,28 @@ def _flush_theaters(
     return rows_written
 
 
+# ── Auto-lock aged-out theaters ────────────────────────────────────────────
+
+def _auto_lock_old_theaters(db: SupplyCoreDb, cutoff: str, now_sql: str) -> int:
+    """Lock unlocked theaters whose end_time is before *cutoff*.
+
+    These theaters have fully aged out of the lookback window and should not
+    be recalculated on future runs.  Users can manually unlock them via the
+    ``locked_at`` column if needed.
+
+    Returns the number of theaters locked.
+    """
+    return db.execute(
+        """
+        UPDATE theaters
+        SET locked_at = %s
+        WHERE locked_at IS NULL
+          AND end_time < %s
+        """,
+        (now_sql, cutoff),
+    )
+
+
 # ── Entry point ─────────────────────────────────────────────────────────────
 
 def run_theater_clustering(
@@ -1156,10 +1187,23 @@ def run_theater_clustering(
     _theater_log(runtime, "theater_clustering.job.started", {"dry_run": dry_run, "computed_at": computed_at})
 
     try:
-        # 1. Load all eligible battles
-        battles = _load_battles(db)
+        # 0. Compute lookback window cutoff
+        clustering_settings = _load_clustering_settings(db)
+        lookback_hours = clustering_settings["theater_clustering_lookback_hours"]
+        if lookback_hours > 0:
+            cutoff_dt = datetime.now(UTC) - timedelta(hours=lookback_hours)
+            cutoff_sql: str | None = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            cutoff_sql = None  # 0 = no window, process everything (legacy)
+        _theater_log(runtime, "theater_clustering.lookback_window", {
+            "lookback_hours": lookback_hours,
+            "cutoff": cutoff_sql,
+        })
+
+        # 1. Load eligible battles within the lookback window
+        battles = _load_battles(db, cutoff=cutoff_sql)
         rows_processed = len(battles)
-        _theater_log(runtime, "theater_clustering.battles_loaded", {"count": len(battles)})
+        _theater_log(runtime, "theater_clustering.battles_loaded", {"count": len(battles), "cutoff": cutoff_sql})
 
         if not battles:
             finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta={"theaters": 0})
@@ -1175,8 +1219,7 @@ def run_theater_clustering(
         participants = _load_battle_participants(db, battle_ids)
         _theater_log(runtime, "theater_clustering.participants_loaded", {"battles_with_participants": len(participants)})
 
-        # 3. Load clustering settings and optional gate distance service
-        clustering_settings = _load_clustering_settings(db)
+        # 3. Optional gate distance service (clustering_settings loaded in step 0)
         gate_svc = None
         try:
             from ..neo4j import Neo4jClient, Neo4jConfig
@@ -1303,9 +1346,15 @@ def run_theater_clustering(
             "system_rows": len(system_rows),
         })
 
-        # 5. Flush to DB
+        # 6. Flush to DB (scoped to the lookback window)
         if not dry_run:
-            rows_written = _flush_theaters(db, theater_rows, battle_assignments, system_rows)
+            rows_written = _flush_theaters(db, theater_rows, battle_assignments, system_rows, cutoff=cutoff_sql)
+
+            # 7. Auto-lock theaters that have fully aged out of the window
+            if cutoff_sql is not None:
+                auto_locked = _auto_lock_old_theaters(db, cutoff_sql, computed_at)
+                if auto_locked:
+                    _theater_log(runtime, "theater_clustering.auto_locked", {"theaters_locked": auto_locked})
 
         finish_job_run(
             db, job,
@@ -1318,7 +1367,7 @@ def run_theater_clustering(
         duration_ms = int((datetime.now(UTC) - started_monotonic).total_seconds() * 1000)
         result = JobResult.success(
             job_key="theater_clustering",
-            summary=f"Clustered {rows_processed} battles into {len(theater_rows)} theaters.",
+            summary=f"Clustered {rows_processed} battles into {len(theater_rows)} theaters (lookback {lookback_hours}h).",
             rows_processed=rows_processed,
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
@@ -1327,6 +1376,8 @@ def run_theater_clustering(
                 "theater_count": len(theater_rows),
                 "battle_assignments": len(battle_assignments),
                 "system_rows": len(system_rows),
+                "lookback_hours": lookback_hours,
+                "cutoff": cutoff_sql,
                 "dry_run": dry_run,
             },
         ).to_dict()
