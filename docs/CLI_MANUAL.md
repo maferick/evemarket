@@ -776,6 +776,8 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `graph_spy_ring_projection` | Spy detection Phase 4 — dedicated GDS projection for spy ring detection |
 | `compute_spy_network_cases` | Spy detection Phase 4 — spy network investigation cases with lifecycle |
 | `compute_spy_risk_profiles` | Spy detection Phase 5 — per-character explainable spy-risk score |
+| `train_spy_shadow_model` | Spy detection Phase 6 — shadow ML trainer (logistic regression baseline) |
+| `score_spy_shadow_ml` | Spy detection Phase 6 — shadow ML scorer across registered models |
 | `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
@@ -884,22 +886,24 @@ Phase 6: Intelligence Products
  31. graph_spy_ring_projection
  32. compute_spy_network_cases
  33. compute_spy_risk_profiles
- 34. compute_alliance_dossiers
- 35. compute_threat_corridors
- 36. compute_bloom_entry_points
+ 34. train_spy_shadow_model
+ 35. score_spy_shadow_ml
+ 36. compute_alliance_dossiers
+ 37. compute_threat_corridors
+ 38. compute_bloom_entry_points
 
 Phase 7: Cleanup & Economics
- 38. compute_graph_prune
- 39. graph_analyst_recalibration
- 40. graph_model_audit
- 41. graph_query_plan_validation
- 42. compute_buy_all
- 43. compute_signals
- 44. compute_economic_warfare
- 45. discord_webhook_filter
+ 39. compute_graph_prune
+ 40. graph_analyst_recalibration
+ 41. graph_model_audit
+ 42. graph_query_plan_validation
+ 43. compute_buy_all
+ 44. compute_signals
+ 45. compute_economic_warfare
+ 46. discord_webhook_filter
 
 Phase 8: Maintenance
- 46. log_to_issues
+ 47. log_to_issues
 ```
 
 ---

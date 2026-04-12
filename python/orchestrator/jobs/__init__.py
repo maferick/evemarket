@@ -50,6 +50,8 @@ from .compute_identity_resolution import run_compute_identity_resolution
 from .graph_spy_ring_projection import run_graph_spy_ring_projection
 from .compute_spy_network_cases import run_compute_spy_network_cases
 from .compute_spy_risk_profiles import run_compute_spy_risk_profiles
+from .spy_shadow_ml_train import run_train_spy_shadow_model
+from .spy_shadow_ml_score import run_score_spy_shadow_ml
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
 from .evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .tracked_alliance_member_sync import run_tracked_alliance_member_sync
