@@ -772,6 +772,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `compute_bloom_entry_points` | Refresh Bloom entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance) |
 | `compute_spy_feature_snapshots` | Spy detection Phase 2 — versioned per-character feature vectors for feature_set=spy_v1 |
 | `build_spy_training_split` | Spy detection Phase 2 — build labeled training/test split over analyst_feedback (manual/low-cadence) |
+| `compute_identity_resolution` | Spy detection Phase 3 — infer probable shared-operator / alt links between characters |
 | `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
@@ -876,22 +877,23 @@ Phase 6: Intelligence Products
  27. intelligence_pipeline
  28. compute_counterintel_pipeline
  29. compute_spy_feature_snapshots
- 30. compute_alliance_dossiers
- 31. compute_threat_corridors
- 32. compute_bloom_entry_points
+ 30. compute_identity_resolution
+ 31. compute_alliance_dossiers
+ 32. compute_threat_corridors
+ 33. compute_bloom_entry_points
 
 Phase 7: Cleanup & Economics
- 33. compute_graph_prune
- 34. graph_analyst_recalibration
- 35. graph_model_audit
- 36. graph_query_plan_validation
- 37. compute_buy_all
- 38. compute_signals
- 39. compute_economic_warfare
- 40. discord_webhook_filter
+ 35. compute_graph_prune
+ 36. graph_analyst_recalibration
+ 37. graph_model_audit
+ 38. graph_query_plan_validation
+ 39. compute_buy_all
+ 40. compute_signals
+ 41. compute_economic_warfare
+ 42. discord_webhook_filter
 
 Phase 8: Maintenance
- 41. log_to_issues
+ 43. log_to_issues
 ```
 
 ---

@@ -46,6 +46,7 @@ from .compute_cohort_baselines import run_compute_cohort_baselines
 from .counterintel_pipeline import run_compute_counterintel_pipeline
 from .spy_feature_snapshots import run_compute_spy_feature_snapshots
 from .spy_training_split_builder import run_build_spy_training_split
+from .compute_identity_resolution import run_compute_identity_resolution
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
 from .evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .tracked_alliance_member_sync import run_tracked_alliance_member_sync
