@@ -553,7 +553,26 @@ def _advance_schedule_with_policy(
 
 def _process_job(context: WorkerPoolContext) -> dict[str, Any]:
     started = time.monotonic()
-    result = run_registered_processor(context.job_key, context.db, context.raw_config)
+    # Extract payload_json from the worker_jobs row so that jobs which accept a
+    # scoped payload (e.g. compute_counterintel_pipeline on-demand character
+    # refresh) can branch to a narrow code path. Jobs whose processors do not
+    # declare a `payload` kwarg will simply ignore this (handled in
+    # run_registered_processor via signature inspection).
+    job_payload: dict[str, Any] | None = None
+    raw_payload = context.job.get("payload_json")
+    if raw_payload:
+        try:
+            parsed = json.loads(str(raw_payload))
+            if isinstance(parsed, dict):
+                job_payload = parsed
+        except Exception:
+            job_payload = None
+    result = run_registered_processor(
+        context.job_key,
+        context.db,
+        context.raw_config,
+        payload=job_payload,
+    )
     # Back-fill timing if the processor didn't provide it.
     elapsed = int((time.monotonic() - started) * 1000)
     if not result.get("duration_ms"):

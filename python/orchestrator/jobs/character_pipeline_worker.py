@@ -309,8 +309,19 @@ def _run_histogram_stage(db: SupplyCoreDb, character_id: int, now_dt: datetime, 
 def _run_counterintel_stage(db: SupplyCoreDb, character_id: int, computed_at: str) -> bool:
     """Compute counterintel features and scores for a single character.
 
-    Mirrors the logic from compute_character_intelligence_on_demand() in PHP
-    but runs in the Python pipeline context.  Returns True if scores were written.
+    Runs the per-character counterintel scoring in the Python pipeline
+    context.  Returns True if scores were written.
+
+    Historical note: an earlier PHP helper
+    (``compute_character_intelligence_on_demand``) duplicated this scoring
+    logic so the character intelligence page could render results
+    synchronously.  That duplication has been removed — the PHP helper is
+    now a pure dispatcher that enqueues a scoped
+    ``compute_counterintel_pipeline`` worker_jobs run
+    (``payload_json.scope == 'character'``), which the Python pipeline
+    executes end-to-end.  This worker stage remains the internal entry
+    point used by ``character_pipeline_worker`` and is consistent with
+    the scoped batch path in ``counterintel_pipeline.py``.
     """
     participations = db.fetch_all(
         """

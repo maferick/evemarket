@@ -87,55 +87,73 @@ def _bv2_cohort_normalize(evidence_rows: list[dict[str, Any]]) -> None:
                 row["confidence_flag"] = "low"
 
 
-def _ensure_character_suspicion_scores_schema(db: SupplyCoreDb) -> None:
-    column_defs: list[tuple[str, str, str]] = [
-        ("suspicion_score_recent", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score"),
-        ("suspicion_score_all_time", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score_recent"),
-        ("suspicion_momentum", "DECIMAL(12,6) NOT NULL DEFAULT 0.000000", "suspicion_score_all_time"),
-        ("percentile_rank", "DECIMAL(10,6) NOT NULL DEFAULT 0.000000", "suspicion_momentum"),
-        ("support_evidence_count", "INT UNSIGNED NOT NULL DEFAULT 0", "supporting_battle_count"),
-        ("community_id", "INT NOT NULL DEFAULT 0", "support_evidence_count"),
-        ("top_supporting_battles_json", "LONGTEXT NOT NULL", "community_id"),
-        ("top_graph_neighbors_json", "LONGTEXT NOT NULL", "top_supporting_battles_json"),
-        ("explanation_json", "LONGTEXT NOT NULL", "top_graph_neighbors_json"),
-    ]
-    for column_name, column_def, after_column in column_defs:
-        row = db.fetch_one(
+_SUSPICION_SCORES_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "suspicion_score_recent",
+    "suspicion_score_all_time",
+    "suspicion_momentum",
+    "percentile_rank",
+    "support_evidence_count",
+    "community_id",
+    "top_supporting_battles_json",
+    "top_graph_neighbors_json",
+    "explanation_json",
+)
+
+_SUSPICION_SCORES_REQUIRED_INDEXES: tuple[str, ...] = (
+    "idx_character_suspicion_scores_recent",
+    "idx_character_suspicion_scores_computed",
+)
+
+
+def _assert_required_columns(
+    db: SupplyCoreDb,
+    table_name: str,
+    required_columns: tuple[str, ...],
+    required_indexes: tuple[str, ...],
+) -> None:
+    """Read-only schema validator.
+
+    Fails fast with a clear error if a table is missing columns or indexes that
+    the job depends on. Does not mutate the schema — schema management is the
+    job of `database/schema.sql` + migrations under `database/migrations/`.
+    """
+    existing_cols = {
+        str(row["COLUMN_NAME"])
+        for row in db.fetch_all(
             """
             SELECT COLUMN_NAME
             FROM INFORMATION_SCHEMA.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'character_suspicion_scores'
-              AND COLUMN_NAME = %s
-            LIMIT 1
+              AND TABLE_NAME = %s
             """,
-            (column_name,),
+            (table_name,),
         )
-        if row:
-            continue
-        db.execute(
-            f"ALTER TABLE character_suspicion_scores ADD COLUMN {column_name} {column_def} AFTER {after_column}"
+    }
+    missing_cols = [c for c in required_columns if c not in existing_cols]
+    if missing_cols:
+        raise RuntimeError(
+            f"schema drift: {table_name} missing columns {missing_cols!r}. "
+            f"Run pending migrations under database/migrations/ "
+            f"(see 2026MMDD_suspicion_scores_schema_reconcile.sql)."
         )
 
-    for index_name, index_cols in (
-        ("idx_character_suspicion_scores_recent", "suspicion_score_recent, suspicion_momentum"),
-        ("idx_character_suspicion_scores_computed", "computed_at"),
-    ):
-        index_row = db.fetch_one(
+    existing_indexes = {
+        str(row["INDEX_NAME"])
+        for row in db.fetch_all(
             """
-            SELECT 1
+            SELECT DISTINCT INDEX_NAME
             FROM INFORMATION_SCHEMA.STATISTICS
             WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'character_suspicion_scores'
-              AND INDEX_NAME = %s
-            LIMIT 1
+              AND TABLE_NAME = %s
             """,
-            (index_name,),
+            (table_name,),
         )
-        if index_row:
-            continue
-        db.execute(
-            f"ALTER TABLE character_suspicion_scores ADD KEY {index_name} ({index_cols})"
+    }
+    missing_indexes = [i for i in required_indexes if i not in existing_indexes]
+    if missing_indexes:
+        raise RuntimeError(
+            f"schema drift: {table_name} missing indexes {missing_indexes!r}. "
+            f"Run pending migrations under database/migrations/."
         )
 
 
@@ -307,7 +325,12 @@ def run_compute_suspicion_scores_v2(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     computed_at = _now_sql()
-    _ensure_character_suspicion_scores_schema(db)
+    _assert_required_columns(
+        db,
+        "character_suspicion_scores",
+        _SUSPICION_SCORES_REQUIRED_COLUMNS,
+        _SUSPICION_SCORES_REQUIRED_INDEXES,
+    )
 
     rows = db.fetch_all(
         """

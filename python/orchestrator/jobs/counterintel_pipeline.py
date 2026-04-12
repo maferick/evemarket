@@ -448,6 +448,7 @@ def run_compute_counterintel_pipeline(
     runtime: dict[str, Any] | None = None,
     *,
     dry_run: bool = False,
+    payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     lock_key = "compute_counterintel_pipeline"
     job = start_job_run(db, lock_key)
@@ -459,8 +460,35 @@ def run_compute_counterintel_pipeline(
     batch_size = max(10, min(200, int(runtime.get("counterintel_batch_size") or DEFAULT_BATTLE_BATCH_SIZE)))
     max_batches = max(1, min(20, int(runtime.get("counterintel_max_batches") or DEFAULT_MAX_BATCHES)))
 
+    # Scoped-run detection for on-demand single-character refresh.
+    #
+    # When payload.scope == 'character', the outer battle loop narrows to
+    # eligible battles this character participated in (ignoring the shared
+    # cursor), and the sync_state cursor is NOT touched — so an on-demand
+    # refresh does not interfere with the scheduled batch run's progress.
+    scope_name: str | None = None
+    scope_character_id = 0
+    if payload:
+        scope_name = (str(payload.get("scope") or "").strip() or None)
+        if scope_name == "character":
+            scope_character_id = int(payload.get("character_id") or 0)
+            if scope_character_id <= 0:
+                raise ValueError(
+                    "payload.scope='character' requires a positive payload.character_id"
+                )
+    is_scoped = scope_name == "character"
+    if is_scoped:
+        # Scoped runs get a single batch of up to 200 of this character's most
+        # recent eligible battles. Enough for an on-demand refresh; keeps the
+        # worker call short.
+        batch_size = 200
+        max_batches = 1
+
     try:
-        cursor = str((_sync_state_get(db, COUNTERINTEL_DATASET_KEY) or {}).get("last_cursor") or "")
+        if is_scoped:
+            cursor = ""
+        else:
+            cursor = str((_sync_state_get(db, COUNTERINTEL_DATASET_KEY) or {}).get("last_cursor") or "")
         user_agent = str(runtime.get("evewho_user_agent") or "SupplyCoreCounterIntel/1.0 (+https://supplycore)")
         org_cache_ttl_hours = max(6, int(runtime.get("evewho_cache_ttl_hours") or 24))
         org_max_fetches = max(5, int(runtime.get("evewho_max_fetches_per_run") or 100))
@@ -475,18 +503,38 @@ def run_compute_counterintel_pipeline(
         assignment_mismatch_count = 0
         assignment_mismatch_samples: list[dict[str, Any]] = []
         while batch_count < max_batches:
-            battles = db.fetch_all(
-                """
-                SELECT br.battle_id, br.system_id, br.started_at, br.ended_at, br.participant_count
-                FROM battle_rollups br
-                WHERE br.eligible_for_suspicion = 1
-                  AND br.participant_count >= 20
-                  AND br.battle_id > %s
-                ORDER BY br.battle_id ASC
-                LIMIT %s
-                """,
-                (last_battle_id, batch_size),
-            )
+            if is_scoped:
+                # On-demand single-character path: only eligible battles this
+                # character participated in. Ordered DESC so the most recent
+                # activity is reflected first. Does not touch the shared
+                # cursor — `last_battle_id` is irrelevant here.
+                battles = db.fetch_all(
+                    """
+                    SELECT br.battle_id, br.system_id, br.started_at, br.ended_at, br.participant_count
+                    FROM battle_rollups br
+                    INNER JOIN battle_participants bp_scope
+                        ON bp_scope.battle_id = br.battle_id
+                       AND bp_scope.character_id = %s
+                    WHERE br.eligible_for_suspicion = 1
+                      AND br.participant_count >= 20
+                    ORDER BY br.battle_id DESC
+                    LIMIT %s
+                    """,
+                    (scope_character_id, batch_size),
+                )
+            else:
+                battles = db.fetch_all(
+                    """
+                    SELECT br.battle_id, br.system_id, br.started_at, br.ended_at, br.participant_count
+                    FROM battle_rollups br
+                    WHERE br.eligible_for_suspicion = 1
+                      AND br.participant_count >= 20
+                      AND br.battle_id > %s
+                    ORDER BY br.battle_id ASC
+                    LIMIT %s
+                    """,
+                    (last_battle_id, batch_size),
+                )
             if not battles:
                 break
 
@@ -1166,14 +1214,20 @@ def run_compute_counterintel_pipeline(
                         )
 
             rows_written += len(hull_rows) + len(overperformance_rows) + len(feature_rows) + len(score_rows) + len(evidence_rows) + org_written
-            _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
+            if not is_scoped:
+                _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, last_battle_id, "success", rows_written)
 
-        has_more = batch_count == max_batches
+        has_more = (batch_count == max_batches) and not is_scoped
 
         duration_ms = int((time.perf_counter() - started) * 1000)
+        summary = (
+            f"Processed {processed_battles} eligible 100+ participant battles across {batch_count} batches."
+            if not is_scoped
+            else f"On-demand scoped run for character {scope_character_id}: {processed_battles} battles processed."
+        )
         result = JobResult.success(
             job_key=lock_key,
-            summary=f"Processed {processed_battles} eligible 100+ participant battles across {batch_count} batches.",
+            summary=summary,
             rows_processed=rows_processed,
             rows_written=0 if dry_run else rows_written,
             duration_ms=duration_ms,
@@ -1184,6 +1238,8 @@ def run_compute_counterintel_pipeline(
                 "rows_would_write": rows_written if dry_run else rows_written,
                 "cursor": last_battle_id,
                 "dry_run": dry_run,
+                "scope": scope_name,
+                "scope_character_id": scope_character_id if is_scoped else 0,
                 "battle_assignment_validation": {
                     "mismatch_count": assignment_mismatch_count,
                     "sample_rows": assignment_mismatch_samples,
@@ -1194,5 +1250,6 @@ def run_compute_counterintel_pipeline(
         return result
     except Exception as exc:
         finish_job_run(db, job, status="failed", rows_processed=rows_processed, rows_written=rows_written, error_text=str(exc))
-        _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, "", "failed", rows_written)
+        if not is_scoped:
+            _sync_state_upsert(db, COUNTERINTEL_DATASET_KEY, "", "failed", rows_written)
         raise

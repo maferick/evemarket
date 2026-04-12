@@ -3595,3 +3595,481 @@ CREATE TABLE IF NOT EXISTS discord_webhook_sent (
     KEY idx_dws_event_type (event_type, sent_at),
     KEY idx_dws_sent_at (sent_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Neo4j GDS ML Feature Store
+--
+-- Canonical DDL for the graph ML feature store. Source of truth for these
+-- tables is this schema.sql block; the migration at
+-- database/migrations/20260408_neo4j_ml_feature_store.sql covers upgrade
+-- paths for existing databases. Any change to these tables must touch both
+-- places in the same PR.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS graph_ml_features (
+    id                      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    character_id            BIGINT UNSIGNED NOT NULL,
+    time_window             VARCHAR(20)  NOT NULL COMMENT '30d, 90d, or lifetime',
+    feature_version         VARCHAR(40)  NOT NULL DEFAULT 'v1' COMMENT 'schema version tag',
+    projection_source       VARCHAR(80)  NOT NULL COMMENT 'GDS projection name used',
+
+    -- GDS-native centrality (replaces hand-rolled approximations)
+    pagerank_score          DOUBLE       NOT NULL DEFAULT 0,
+    betweenness_score       DOUBLE       NOT NULL DEFAULT 0,
+    degree_centrality       INT UNSIGNED NOT NULL DEFAULT 0,
+    hits_hub_score          DOUBLE       NOT NULL DEFAULT 0,
+    hits_auth_score         DOUBLE       NOT NULL DEFAULT 0,
+    kcore_level             INT UNSIGNED NOT NULL DEFAULT 0,
+    is_articulation_point   TINYINT      NOT NULL DEFAULT 0,
+
+    -- Community detection (Leiden > Louvain > label propagation)
+    community_id            INT          NOT NULL DEFAULT 0,
+    community_algo          VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'leiden, louvain, or lpa',
+
+    -- FastRP embedding (stored as JSON array of floats)
+    fastrp_embedding        JSON         DEFAULT NULL COMMENT '64-128 dim float vector',
+    embedding_dimension     SMALLINT     NOT NULL DEFAULT 0,
+
+    -- Derived from embeddings
+    embedding_anomaly_score DOUBLE       NOT NULL DEFAULT 0 COMMENT 'distance from alliance centroid',
+
+    computed_at             DATETIME     NOT NULL,
+    run_id                  VARCHAR(60)  NOT NULL DEFAULT '' COMMENT 'ties to graph_ml_run_log',
+
+    KEY idx_gml_char_window (character_id, time_window),
+    KEY idx_gml_version     (feature_version, time_window, computed_at),
+    KEY idx_gml_community   (community_id, time_window),
+    KEY idx_gml_kcore       (kcore_level DESC, time_window),
+    KEY idx_gml_anomaly     (embedding_anomaly_score DESC, time_window),
+    KEY idx_gml_run         (run_id),
+    UNIQUE KEY uq_gml_char_window_version (character_id, time_window, feature_version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS graph_ml_link_predictions (
+    id                      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    character_id_a          BIGINT UNSIGNED NOT NULL,
+    character_id_b          BIGINT UNSIGNED NOT NULL,
+    time_window             VARCHAR(20)  NOT NULL,
+    feature_version         VARCHAR(40)  NOT NULL DEFAULT 'v1',
+    prediction_type         VARCHAR(40)  NOT NULL DEFAULT 'association' COMMENT 'association, alt_link, coordination',
+
+    -- Prediction scores
+    confidence              DOUBLE       NOT NULL DEFAULT 0 COMMENT '0.0-1.0 predicted link probability',
+    adamic_adar_score       DOUBLE       NOT NULL DEFAULT 0,
+    common_neighbors_score  DOUBLE       NOT NULL DEFAULT 0,
+    pref_attachment_score   DOUBLE       NOT NULL DEFAULT 0,
+    resource_alloc_score    DOUBLE       NOT NULL DEFAULT 0,
+    same_community          TINYINT      NOT NULL DEFAULT 0,
+    total_neighbors_score   DOUBLE       NOT NULL DEFAULT 0,
+
+    -- Explainability support for analysts
+    shared_community_ids    JSON         DEFAULT NULL COMMENT 'communities both belong to',
+    copresence_count        INT UNSIGNED NOT NULL DEFAULT 0,
+    common_neighbor_ids     JSON         DEFAULT NULL COMMENT 'top shared neighbor character_ids',
+    embedding_similarity    DOUBLE       NOT NULL DEFAULT 0 COMMENT 'cosine similarity of embeddings',
+    embedding_sim_percentile DOUBLE      NOT NULL DEFAULT 0 COMMENT 'percentile rank among all pairs',
+    same_side_ratio         DOUBLE       NOT NULL DEFAULT 0 COMMENT 'fraction of battles on same side',
+    cross_side_count        INT UNSIGNED NOT NULL DEFAULT 0,
+    explanation_summary     TEXT         DEFAULT NULL COMMENT 'human-readable explanation',
+
+    computed_at             DATETIME     NOT NULL,
+    run_id                  VARCHAR(60)  NOT NULL DEFAULT '',
+
+    KEY idx_gmlp_pair       (character_id_a, character_id_b, time_window),
+    KEY idx_gmlp_conf       (confidence DESC, time_window),
+    KEY idx_gmlp_char_a     (character_id_a, confidence DESC),
+    KEY idx_gmlp_char_b     (character_id_b, confidence DESC),
+    KEY idx_gmlp_type       (prediction_type, confidence DESC),
+    KEY idx_gmlp_run        (run_id),
+    UNIQUE KEY uq_gmlp_pair_window (character_id_a, character_id_b, time_window, feature_version, prediction_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS graph_ml_run_log (
+    run_id                  VARCHAR(60)  NOT NULL PRIMARY KEY,
+    started_at              DATETIME     NOT NULL,
+    finished_at             DATETIME     DEFAULT NULL,
+    status                  VARCHAR(20)  NOT NULL DEFAULT 'running' COMMENT 'running, success, failed',
+    time_window             VARCHAR(20)  NOT NULL,
+    feature_version         VARCHAR(40)  NOT NULL DEFAULT 'v1',
+    projection_name         VARCHAR(80)  NOT NULL DEFAULT '',
+    gds_available           TINYINT      NOT NULL DEFAULT 0,
+    analytics_path          VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'gds or fallback',
+
+    -- Counts
+    characters_processed    INT UNSIGNED NOT NULL DEFAULT 0,
+    features_written        INT UNSIGNED NOT NULL DEFAULT 0,
+    links_predicted         INT UNSIGNED NOT NULL DEFAULT 0,
+
+    -- Config snapshot
+    config_json             JSON         DEFAULT NULL COMMENT 'algorithm params used',
+    error_text              TEXT         DEFAULT NULL,
+
+    KEY idx_gml_run_status  (status, started_at DESC),
+    KEY idx_gml_run_window  (time_window, started_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Graph community assignments (written by graph_community_detection_sync job).
+-- Canonical DDL; migrations 20260326/20260327 cover upgrade paths for
+-- existing databases.
+CREATE TABLE IF NOT EXISTS graph_community_assignments (
+    character_id           BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    community_id           INT UNSIGNED NOT NULL DEFAULT 0,
+    community_size         INT UNSIGNED NOT NULL DEFAULT 0,
+    membership_score       DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+    is_bridge              TINYINT NOT NULL DEFAULT 0,
+    betweenness_centrality DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    pagerank_score         DECIMAL(14,8) NOT NULL DEFAULT 0.00000000,
+    degree_centrality      INT UNSIGNED NOT NULL DEFAULT 0,
+    computed_at            DATETIME NOT NULL,
+    KEY idx_gca_community (community_id, pagerank_score DESC),
+    KEY idx_gca_bridge (is_bridge, betweenness_centrality DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy Detection Platform — Phase 2: Feature & Label Foundation
+-- ---------------------------------------------------------------------------
+-- Versioned per-character feature snapshots and labeled training-split
+-- substrate. Input layer for the explainable spy-risk score (Phase 5) and
+-- the shadow ML lane (Phase 6). Reuses analyst_feedback for labels (see
+-- docs/SPY_LABEL_POLICY.md and python/orchestrator/jobs/spy_label_policy.py).
+-- Migration: database/migrations/20260411_spy_feature_label_foundation.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_feature_snapshots (
+    snapshot_id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    character_id        BIGINT UNSIGNED NOT NULL,
+    feature_set         VARCHAR(40)     NOT NULL,
+    feature_version     VARCHAR(40)     NOT NULL,
+    window_label        VARCHAR(20)     NOT NULL,
+    feature_vector_json LONGTEXT        NOT NULL,
+    feature_vector_hash CHAR(64)        NOT NULL,
+    source_run_id       VARCHAR(64)     NOT NULL,
+    computed_at         DATETIME        NOT NULL,
+    UNIQUE KEY uq_cfs (character_id, feature_set, feature_version, window_label, computed_at),
+    KEY idx_cfs_set_window (feature_set, feature_version, window_label, computed_at),
+    KEY idx_cfs_character (character_id, computed_at),
+    KEY idx_cfs_hash (feature_vector_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS feature_set_definitions (
+    feature_set     VARCHAR(40) NOT NULL,
+    feature_version VARCHAR(40) NOT NULL,
+    schema_json     LONGTEXT    NOT NULL,
+    created_at      DATETIME    NOT NULL,
+    status          ENUM('active','deprecated','draft') NOT NULL DEFAULT 'active',
+    PRIMARY KEY (feature_set, feature_version),
+    KEY idx_fsd_status (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS model_training_splits (
+    split_id             VARCHAR(64) NOT NULL PRIMARY KEY,
+    feature_set          VARCHAR(40) NOT NULL,
+    feature_version      VARCHAR(40) NOT NULL,
+    split_strategy       VARCHAR(40) NOT NULL,
+    train_window_start   DATETIME    NOT NULL,
+    train_window_end     DATETIME    NOT NULL,
+    test_window_start    DATETIME    NOT NULL,
+    test_window_end      DATETIME    NOT NULL,
+    positive_count       INT UNSIGNED NOT NULL DEFAULT 0,
+    negative_count       INT UNSIGNED NOT NULL DEFAULT 0,
+    seed                 INT UNSIGNED NOT NULL,
+    created_at           DATETIME    NOT NULL,
+    notes                TEXT        NULL,
+    KEY idx_mts_feature (feature_set, feature_version, created_at),
+    KEY idx_mts_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS model_training_split_members (
+    split_id         VARCHAR(64) NOT NULL,
+    character_id     BIGINT UNSIGNED NOT NULL,
+    split_role       ENUM('train','validation','test','holdout') NOT NULL,
+    label            ENUM('positive','negative','unknown') NOT NULL,
+    label_source     VARCHAR(40) NOT NULL,
+    label_confidence DECIMAL(5,3) NOT NULL DEFAULT 0.500,
+    PRIMARY KEY (split_id, character_id),
+    KEY idx_mtsm_role (split_id, split_role, label),
+    KEY idx_mtsm_character (character_id),
+    CONSTRAINT fk_mtsm_split FOREIGN KEY (split_id)
+        REFERENCES model_training_splits(split_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy detection platform — Phase 3 (identity resolution)
+--
+-- Infers probable shared-operator / alt links between characters from
+-- organizational, temporal, copresence, behavioral, and graph-embedding
+-- signals. Outputs feed Phase 4 ring case detection and Phase 5 per-character
+-- spy-risk profiles. Operator guardrail in docs/IDENTITY_RESOLUTION_DISCLAIMER.md.
+-- Migration: database/migrations/20260411_identity_resolution.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_identity_links (
+    link_id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    character_id_a       BIGINT UNSIGNED NOT NULL,
+    character_id_b       BIGINT UNSIGNED NOT NULL,
+    link_score           DECIMAL(10,6) NOT NULL,
+    confidence_tier      ENUM('low','medium','high') NOT NULL,
+    window_label         VARCHAR(20) NOT NULL DEFAULT 'all_time',
+    org_history_score    DECIMAL(10,6) NOT NULL DEFAULT 0,
+    copresence_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    temporal_score       DECIMAL(10,6) NOT NULL DEFAULT 0,
+    cross_side_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    behavior_sim_score   DECIMAL(10,6) NOT NULL DEFAULT 0,
+    embedding_sim_score  DECIMAL(10,6) NOT NULL DEFAULT 0,
+    evidence_json        LONGTEXT NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    source_run_id        VARCHAR(64) NOT NULL,
+    UNIQUE KEY uq_cil_pair_window (character_id_a, character_id_b, window_label),
+    KEY idx_cil_a_tier (character_id_a, confidence_tier, link_score),
+    KEY idx_cil_b_tier (character_id_b, confidence_tier, link_score),
+    KEY idx_cil_score (link_score, confidence_tier),
+    KEY idx_cil_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_identity_clusters (
+    cluster_id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    member_count         INT UNSIGNED NOT NULL,
+    cluster_confidence   DECIMAL(10,6) NOT NULL,
+    internal_density     DECIMAL(10,6) NOT NULL,
+    top_evidence_json    LONGTEXT NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    source_run_id        VARCHAR(64) NOT NULL,
+    KEY idx_cic_confidence (cluster_confidence, member_count),
+    KEY idx_cic_computed (computed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_identity_cluster_members (
+    cluster_id           BIGINT UNSIGNED NOT NULL,
+    character_id         BIGINT UNSIGNED NOT NULL,
+    membership_score     DECIMAL(10,6) NOT NULL,
+    computed_at          DATETIME NOT NULL,
+    PRIMARY KEY (cluster_id, character_id),
+    KEY idx_cicm_char (character_id, membership_score),
+    CONSTRAINT fk_cicm_cluster FOREIGN KEY (cluster_id)
+        REFERENCES character_identity_clusters(cluster_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS identity_resolution_runs (
+    run_id                  VARCHAR(64) NOT NULL PRIMARY KEY,
+    started_at              DATETIME NOT NULL,
+    finished_at             DATETIME DEFAULT NULL,
+    status                  VARCHAR(20) NOT NULL DEFAULT 'running',
+    candidate_pairs         INT UNSIGNED NOT NULL DEFAULT 0,
+    links_written           INT UNSIGNED NOT NULL DEFAULT 0,
+    clusters_written        INT UNSIGNED NOT NULL DEFAULT 0,
+    threshold_config_json   LONGTEXT NULL,
+    score_distribution_json LONGTEXT NULL,
+    error_text              TEXT NULL,
+    KEY idx_irr_status (status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy detection platform — Phase 4 (ring case detection)
+--
+-- Suspicious rings/networks as first-class investigation cases with lifecycle
+-- state, member roles, and edge-level evidence. Built atop a dedicated GDS
+-- spy_ring_projection graph.
+-- Migration: database/migrations/20260411_spy_network_cases.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS spy_ring_projection_runs (
+    run_id                      VARCHAR(64) NOT NULL PRIMARY KEY,
+    started_at                  DATETIME NOT NULL,
+    finished_at                 DATETIME DEFAULT NULL,
+    status                      VARCHAR(20) NOT NULL DEFAULT 'running',
+    projection_name             VARCHAR(80) NOT NULL,
+    node_count                  INT UNSIGNED NOT NULL DEFAULT 0,
+    edge_count                  INT UNSIGNED NOT NULL DEFAULT 0,
+    rel_type_distribution_json  LONGTEXT NULL,
+    threshold_config_json       LONGTEXT NULL,
+    edge_weight_stats_json      LONGTEXT NULL,
+    remap_decisions_json        LONGTEXT NULL,
+    auto_closed_case_ids_json   LONGTEXT NULL,
+    error_text                  TEXT NULL,
+    KEY idx_srpr_status (status, started_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_network_cases (
+    case_id                     BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    community_id                BIGINT NULL,
+    community_source            VARCHAR(40) NOT NULL DEFAULT 'spy_ring_projection',
+    identity_cluster_id         BIGINT UNSIGNED NULL,
+    ring_score                  DECIMAL(10,6) NOT NULL,
+    confidence_score            DECIMAL(10,6) NOT NULL,
+    severity_tier               ENUM('monitor','medium','high','critical') NOT NULL,
+    member_count                INT UNSIGNED NOT NULL,
+    suspicious_member_ratio     DECIMAL(6,4) NOT NULL DEFAULT 0,
+    bridge_concentration        DECIMAL(6,4) NOT NULL DEFAULT 0,
+    recent_growth_score         DECIMAL(10,6) NOT NULL DEFAULT 0,
+    hostile_overlap_density     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    recurrence_stability        DECIMAL(10,6) NOT NULL DEFAULT 0,
+    identity_density            DECIMAL(10,6) NOT NULL DEFAULT 0,
+    feature_breakdown_json      LONGTEXT NOT NULL,
+    status                      ENUM('open','reviewing','closed','reopened') NOT NULL DEFAULT 'open',
+    status_changed_at           DATETIME NOT NULL,
+    status_changed_by           BIGINT UNSIGNED NULL,
+    first_detected_at           DATETIME NOT NULL,
+    last_reinforced_at          DATETIME NOT NULL,
+    model_version               VARCHAR(40) NOT NULL DEFAULT 'spy_ring_v1',
+    computed_at                 DATETIME NOT NULL,
+    source_run_id               VARCHAR(64) NOT NULL,
+    UNIQUE KEY uq_snc_community (community_source, community_id, model_version),
+    KEY idx_snc_status_score (status, ring_score),
+    KEY idx_snc_severity (severity_tier, ring_score),
+    KEY idx_snc_reinforced (last_reinforced_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_network_case_status_log (
+    log_id                      BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    case_id                     BIGINT UNSIGNED NOT NULL,
+    old_status                  VARCHAR(20) NOT NULL,
+    new_status                  VARCHAR(20) NOT NULL,
+    analyst_character_id        BIGINT UNSIGNED NULL,
+    note                        TEXT NULL,
+    changed_at                  DATETIME NOT NULL,
+    KEY idx_sncsl_case (case_id, changed_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_network_case_members (
+    case_id                     BIGINT UNSIGNED NOT NULL,
+    character_id                BIGINT UNSIGNED NOT NULL,
+    member_contribution_score   DECIMAL(10,6) NOT NULL,
+    role_label                  VARCHAR(40) NOT NULL DEFAULT 'member',
+    evidence_json               LONGTEXT NOT NULL,
+    computed_at                 DATETIME NOT NULL,
+    PRIMARY KEY (case_id, character_id),
+    KEY idx_sncm_char (character_id, member_contribution_score),
+    KEY idx_sncm_role (case_id, role_label),
+    CONSTRAINT fk_sncm_case FOREIGN KEY (case_id)
+        REFERENCES spy_network_cases(case_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_network_case_edges (
+    case_id                     BIGINT UNSIGNED NOT NULL,
+    character_id_a              BIGINT UNSIGNED NOT NULL,
+    character_id_b              BIGINT UNSIGNED NOT NULL,
+    edge_type                   VARCHAR(60) NOT NULL,
+    edge_weight                 DECIMAL(10,6) NOT NULL,
+    component_weights_json      LONGTEXT NOT NULL,
+    evidence_json               LONGTEXT NOT NULL,
+    computed_at                 DATETIME NOT NULL,
+    PRIMARY KEY (case_id, character_id_a, character_id_b, edge_type),
+    KEY idx_snce_a (character_id_a, case_id),
+    KEY idx_snce_b (character_id_b, case_id),
+    CONSTRAINT fk_snce_case FOREIGN KEY (case_id)
+        REFERENCES spy_network_cases(case_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy detection platform — Phase 5 (character spy risk profiles)
+--
+-- Per-character explainable spy-risk score with 9 components, evidence rows,
+-- and Bloom :SpyRisk tier. The analyst-facing primary product.
+-- Migration: database/migrations/20260411_character_spy_risk_profiles.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_spy_risk_profiles (
+    character_id                  BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+    spy_risk_score                DECIMAL(10,6) NOT NULL,
+    risk_percentile               DECIMAL(10,6) NOT NULL,
+    confidence_score              DECIMAL(10,6) NOT NULL,
+    confidence_tier               ENUM('low','medium','high') NOT NULL,
+    severity_tier                 ENUM('monitor','medium','high','critical') NOT NULL,
+    bridge_infiltration_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    pre_op_infiltration_score     DECIMAL(10,6) NOT NULL DEFAULT 0,
+    hostile_overlap_score         DECIMAL(10,6) NOT NULL DEFAULT 0,
+    temporal_coordination_score   DECIMAL(10,6) NOT NULL DEFAULT 0,
+    identity_association_score    DECIMAL(10,6) NOT NULL DEFAULT 0,
+    ring_context_score            DECIMAL(10,6) NOT NULL DEFAULT 0,
+    behavioral_anomaly_score      DECIMAL(10,6) NOT NULL DEFAULT 0,
+    org_movement_score            DECIMAL(10,6) NOT NULL DEFAULT 0,
+    predicted_hostile_link_score  DECIMAL(10,6) NOT NULL DEFAULT 0,
+    top_case_id                   BIGINT UNSIGNED NULL,
+    explanation_json              LONGTEXT NOT NULL,
+    component_weights_json        LONGTEXT NOT NULL,
+    model_version                 VARCHAR(40) NOT NULL DEFAULT 'spy_risk_v1',
+    computed_at                   DATETIME NOT NULL,
+    source_run_id                 VARCHAR(64) NOT NULL,
+    KEY idx_csrp_score (spy_risk_score),
+    KEY idx_csrp_severity (severity_tier, spy_risk_score),
+    KEY idx_csrp_computed (computed_at),
+    KEY idx_csrp_top_case (top_case_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS character_spy_risk_evidence (
+    character_id           BIGINT UNSIGNED NOT NULL,
+    evidence_key           VARCHAR(120) NOT NULL,
+    window_label           VARCHAR(20) NOT NULL DEFAULT 'all_time',
+    evidence_value         DECIMAL(16,6) NULL,
+    expected_value         DECIMAL(16,6) NULL,
+    deviation_value        DECIMAL(16,6) NULL,
+    z_score                DECIMAL(12,6) NULL,
+    cohort_percentile      DECIMAL(10,6) NULL,
+    confidence_flag        VARCHAR(20) NOT NULL DEFAULT 'low',
+    contribution_to_score  DECIMAL(10,6) NOT NULL DEFAULT 0,
+    evidence_text          VARCHAR(500) NOT NULL,
+    evidence_payload_json  LONGTEXT NULL,
+    computed_at            DATETIME NOT NULL,
+    PRIMARY KEY (character_id, evidence_key, window_label),
+    KEY idx_csre_signal (evidence_key, cohort_percentile),
+    KEY idx_csre_char_computed (character_id, computed_at),
+    KEY idx_csre_contribution (character_id, contribution_to_score)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Spy detection platform — Phase 6 (Shadow ML / GNN lane)
+--
+-- Experimental shadow ML scoring: shadow scores, run metrics, model registry.
+-- Migration: database/migrations/20260412_spy_shadow_ml.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS character_spy_shadow_scores (
+    character_id            BIGINT UNSIGNED NOT NULL,
+    model_family            VARCHAR(40) NOT NULL,
+    model_version           VARCHAR(40) NOT NULL,
+    prediction_score        DECIMAL(10,6) NOT NULL,
+    prediction_percentile   DECIMAL(10,6) NOT NULL,
+    split_label             ENUM('train','validation','test','live_shadow') NOT NULL,
+    attribution_json        LONGTEXT NULL,
+    feature_vector_hash     VARCHAR(64) NOT NULL,
+    computed_at             DATETIME NOT NULL,
+    PRIMARY KEY (character_id, model_family, model_version, split_label),
+    KEY idx_csss_model_score (model_family, model_version, split_label, prediction_score DESC),
+    KEY idx_csss_computed (computed_at),
+    KEY idx_csss_hash (feature_vector_hash)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_model_run_metrics (
+    run_id                      VARCHAR(64) NOT NULL PRIMARY KEY,
+    model_family                VARCHAR(40) NOT NULL,
+    model_version               VARCHAR(40) NOT NULL,
+    split_id                    VARCHAR(64) NULL,
+    auc_roc                     DECIMAL(10,6) NULL,
+    pr_auc                      DECIMAL(10,6) NULL,
+    precision_at_k              DECIMAL(10,6) NULL,
+    recall_at_k                 DECIMAL(10,6) NULL,
+    brier_score                 DECIMAL(10,6) NULL,
+    expected_calibration_error  DECIMAL(10,6) NULL,
+    top_k                       INT UNSIGNED NOT NULL DEFAULT 100,
+    calibration_json            LONGTEXT NULL,
+    drift_json                  LONGTEXT NULL,
+    training_sample_count       INT UNSIGNED NOT NULL DEFAULT 0,
+    shadow_sample_count         INT UNSIGNED NOT NULL DEFAULT 0,
+    started_at                  DATETIME NOT NULL,
+    completed_at                DATETIME NULL,
+    status                      VARCHAR(20) NOT NULL DEFAULT 'running',
+    notes                       TEXT NULL,
+    KEY idx_smrm_model (model_family, model_version, started_at DESC),
+    KEY idx_smrm_status (status, started_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS spy_model_registry (
+    model_family           VARCHAR(40) NOT NULL,
+    model_version          VARCHAR(40) NOT NULL,
+    status                 ENUM('experimental','candidate','promoted','deprecated') NOT NULL DEFAULT 'experimental',
+    artifact_uri           VARCHAR(1024) NULL,
+    artifact_sha256        CHAR(64) NULL,
+    artifact_size_bytes    BIGINT UNSIGNED NULL,
+    feature_set            VARCHAR(40) NOT NULL,
+    feature_version        VARCHAR(40) NOT NULL,
+    created_at             DATETIME NOT NULL,
+    promoted_at            DATETIME NULL,
+    deprecated_at          DATETIME NULL,
+    notes                  TEXT NULL,
+    PRIMARY KEY (model_family, model_version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

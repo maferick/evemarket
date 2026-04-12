@@ -33,6 +33,14 @@ from .jobs import (
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
     run_compute_counterintel_pipeline,
+    run_compute_spy_feature_snapshots,
+    run_build_spy_training_split,
+    run_compute_identity_resolution,
+    run_graph_spy_ring_projection,
+    run_compute_spy_network_cases,
+    run_compute_spy_risk_profiles,
+    run_train_spy_shadow_model,
+    run_score_spy_shadow_ml,
     run_evewho_enrichment_sync,
     run_market_hub_current_sync,
     run_alliance_current_sync,
@@ -141,6 +149,14 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_battle_actor_features",
     "compute_suspicion_scores",
     "compute_counterintel_pipeline",
+    "compute_spy_feature_snapshots",
+    "build_spy_training_split",
+    "compute_identity_resolution",
+    "graph_spy_ring_projection",
+    "compute_spy_network_cases",
+    "compute_spy_risk_profiles",
+    "train_spy_shadow_model",
+    "score_spy_shadow_ml",
     "intelligence_pipeline",
     "graph_data_quality_check",
     "graph_temporal_metrics_sync",
@@ -244,6 +260,19 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "compute_battle_actor_features": (run_compute_battle_actor_features, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_suspicion_scores": (run_compute_suspicion_scores, lambda db, cfg: (db, battle_runtime(cfg))),
     "compute_counterintel_pipeline": (run_compute_counterintel_pipeline, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 2 (feature & label foundation)
+    "compute_spy_feature_snapshots": (run_compute_spy_feature_snapshots, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "build_spy_training_split": (run_build_spy_training_split, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 3 (identity resolution)
+    "compute_identity_resolution": (run_compute_identity_resolution, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 4 (ring case detection)
+    "graph_spy_ring_projection": (run_graph_spy_ring_projection, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "compute_spy_network_cases": (run_compute_spy_network_cases, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 5 (character spy risk)
+    "compute_spy_risk_profiles": (run_compute_spy_risk_profiles, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    # Spy detection platform — Phase 6 (shadow ML)
+    "train_spy_shadow_model": (run_train_spy_shadow_model, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
+    "score_spy_shadow_ml": (run_score_spy_shadow_ml, lambda db, cfg: (db, neo4j_runtime(cfg), battle_runtime(cfg))),
     "compute_behavioral_scoring": (run_compute_behavioral_scoring, lambda db, cfg: (db, battle_runtime(cfg))),
     # Opposition daily intelligence
     "compute_opposition_daily_snapshots": (run_compute_opposition_daily_snapshots, lambda db, cfg: (db,)),
@@ -353,7 +382,14 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
 }
 
 
-def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], *, verbose: bool = False) -> dict[str, Any]:
+def run_registered_processor(
+    job_key: str,
+    db: Any,
+    raw_config: dict[str, Any],
+    *,
+    verbose: bool = False,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     entry = _PROCESSOR_DISPATCH.get(job_key)
     if entry is None:
         in_compute_registry = job_key in PYTHON_COMPUTE_PROCESSOR_JOB_KEYS
@@ -363,13 +399,18 @@ def run_registered_processor(job_key: str, db: Any, raw_config: dict[str, Any], 
             f"{job_key} (in_compute_registry={in_compute_registry}, in_sync_registry={in_sync_registry})."
         )
     processor_fn, arg_factory = entry
-    # Forward verbose if the processor accepts it (keyword-only to avoid breaking positional signatures).
+    # Forward verbose and payload if the processor accepts them (keyword-only to
+    # avoid breaking positional signatures). This is how on-demand scoped runs
+    # thread worker_jobs.payload_json through to jobs that declare a
+    # `payload: dict | None = None` kwarg (e.g. compute_counterintel_pipeline).
     import inspect
     sig = inspect.signature(processor_fn)
+    fn_kwargs: dict[str, Any] = {}
     if "verbose" in sig.parameters:
-        raw_result = processor_fn(*arg_factory(db, raw_config), verbose=verbose)
-    else:
-        raw_result = processor_fn(*arg_factory(db, raw_config))
+        fn_kwargs["verbose"] = verbose
+    if payload is not None and "payload" in sig.parameters:
+        fn_kwargs["payload"] = payload
+    raw_result = processor_fn(*arg_factory(db, raw_config), **fn_kwargs)
     # Normalize: if the processor returned a JobResult object instead of a dict,
     # convert it so from_raw() can process it.
     if isinstance(raw_result, JobResult):

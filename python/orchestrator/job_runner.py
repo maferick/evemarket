@@ -70,6 +70,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=0, help="Override batch size for compatible jobs.")
     parser.add_argument("--max-batches", type=int, default=0, help="Maximum number of batches to run for compatible jobs.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose structured worker output.")
+    parser.add_argument(
+        "--payload",
+        type=str,
+        default="",
+        help=(
+            "Optional JSON payload to forward to the processor. Used by jobs "
+            "that support scoped runs (e.g. "
+            "compute_counterintel_pipeline with {\"scope\":\"character\",\"character_id\":N})."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -200,7 +210,13 @@ def process_job(context: PythonWorkerContext) -> dict[str, Any]:
 
     if context.job_key not in PYTHON_PROCESSOR_JOB_KEYS:
         raise RuntimeError(f"No Python processor is registered for job {context.job_key}.")
-    result = run_registered_processor(context.job_key, context.db, context.raw_config)
+    cli_payload = context.cli_options.get("payload") if isinstance(context.cli_options, dict) else None
+    result = run_registered_processor(
+        context.job_key,
+        context.db,
+        context.raw_config,
+        payload=cli_payload if isinstance(cli_payload, dict) else None,
+    )
 
     # Back-fill timing if the processor didn't provide it.
     elapsed = int((time.time() - start) * 1000)
@@ -225,6 +241,19 @@ def main() -> int:
     if audit["issues"]:
         raise RuntimeError("Enabled Python job binding audit failed: " + "; ".join(audit["issues"]))
     job = _fetch_claimed_job(db, max(0, args.schedule_id))
+    # Parse optional --payload JSON from the CLI so scoped single-entity runs
+    # are reachable from a manual invocation (CLI parity with the worker pool
+    # path, which reads payload_json from the worker_jobs row).
+    payload_dict: dict[str, Any] | None = None
+    payload_raw = str(getattr(args, "payload", "") or "").strip()
+    if payload_raw:
+        try:
+            import json as _json
+            parsed = _json.loads(payload_raw)
+            if isinstance(parsed, dict):
+                payload_dict = parsed
+        except Exception as exc:
+            raise RuntimeError(f"--payload must be a JSON object: {exc}") from exc
     context = PythonWorkerContext(
         schedule_id=max(0, args.schedule_id),
         app_root=app_root,
@@ -238,6 +267,7 @@ def main() -> int:
             "batch_size": max(0, int(args.batch_size or 0)),
             "max_batches": max(0, int(args.max_batches or 0)),
             "verbose": bool(args.verbose),
+            "payload": payload_dict,
         },
     )
 

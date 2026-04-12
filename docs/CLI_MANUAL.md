@@ -770,6 +770,14 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `theater_graph_integration` | Theater → graph integration |
 | `theater_suspicion` | Theater-level suspicion |
 | `compute_bloom_entry_points` | Refresh Bloom entry-point labels (HotBattle, HighRiskPilot, StrategicSystem, HotAlliance) |
+| `compute_spy_feature_snapshots` | Spy detection Phase 2 — versioned per-character feature vectors for feature_set=spy_v1 |
+| `build_spy_training_split` | Spy detection Phase 2 — build labeled training/test split over analyst_feedback (manual/low-cadence) |
+| `compute_identity_resolution` | Spy detection Phase 3 — infer probable shared-operator / alt links between characters |
+| `graph_spy_ring_projection` | Spy detection Phase 4 — dedicated GDS projection for spy ring detection |
+| `compute_spy_network_cases` | Spy detection Phase 4 — spy network investigation cases with lifecycle |
+| `compute_spy_risk_profiles` | Spy detection Phase 5 — per-character explainable spy-risk score |
+| `train_spy_shadow_model` | Spy detection Phase 6 — shadow ML trainer (logistic regression baseline) |
+| `score_spy_shadow_ml` | Spy detection Phase 6 — shadow ML scorer across registered models |
 | `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
@@ -873,22 +881,29 @@ Phase 5: Graph Analysis
 Phase 6: Intelligence Products
  27. intelligence_pipeline
  28. compute_counterintel_pipeline
- 29. compute_alliance_dossiers
- 30. compute_threat_corridors
- 31. compute_bloom_entry_points
+ 29. compute_spy_feature_snapshots
+ 30. compute_identity_resolution
+ 31. graph_spy_ring_projection
+ 32. compute_spy_network_cases
+ 33. compute_spy_risk_profiles
+ 34. train_spy_shadow_model
+ 35. score_spy_shadow_ml
+ 36. compute_alliance_dossiers
+ 37. compute_threat_corridors
+ 38. compute_bloom_entry_points
 
 Phase 7: Cleanup & Economics
- 32. compute_graph_prune
- 33. graph_analyst_recalibration
- 34. graph_model_audit
- 35. graph_query_plan_validation
- 36. compute_buy_all
- 37. compute_signals
- 38. compute_economic_warfare
- 39. discord_webhook_filter
+ 39. compute_graph_prune
+ 40. graph_analyst_recalibration
+ 41. graph_model_audit
+ 42. graph_query_plan_validation
+ 43. compute_buy_all
+ 44. compute_signals
+ 45. compute_economic_warfare
+ 46. discord_webhook_filter
 
 Phase 8: Maintenance
- 40. log_to_issues
+ 47. log_to_issues
 ```
 
 ---
