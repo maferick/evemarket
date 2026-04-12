@@ -1,0 +1,23 @@
+[Unit]
+Description=SupplyCore ESI continuous worker (character affiliations, entity metadata, enrichment)
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/SupplyCore
+EnvironmentFile=-/etc/default/supplycore-worker
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/SupplyCore/.venv-orchestrator/bin/python /var/www/SupplyCore/bin/python_orchestrator.py esi-continuous --app-root /var/www/SupplyCore --idle-sleep 5 --memory-max-gb 2.0
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+MemoryMax=3G
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

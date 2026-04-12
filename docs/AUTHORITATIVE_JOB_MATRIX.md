@@ -70,6 +70,12 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | compute_spy_risk_profiles | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 5 — per-character explainable spy-risk score. |
 | train_spy_shadow_model | real_schedulable | yes | yes | no | yes | yes | yes |  | Spy detection Phase 6 — shadow ML trainer (logistic regression baseline). |
 | score_spy_shadow_ml | real_schedulable | yes | yes | yes | yes | yes | yes |  | Spy detection Phase 6 — shadow ML scorer across registered models. |
+| esi_character_queue_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed by esi-continuous daemon. Queues newly seen characters for ESI lookup. |
+| esi_affiliation_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed by esi-continuous daemon. Fetches character → alliance/corp affiliations. |
+| entity_metadata_resolve_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed by esi-continuous daemon. Resolves entity IDs to names via ESI. |
+| evewho_enrichment_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed by esi-continuous daemon. Batch-enriches characters via EveWho API. |
+| esi_alliance_history_sync | real_schedulable | yes | yes | no | yes | yes | yes |  | Fetches ESI corporation history and derives alliance membership periods. |
+| character_killmail_sync | real_schedulable | yes | yes | yes | yes | yes | yes |  | Per-character killmail fetch from zKillboard API. |
 | killmail_r2z2_sync | external_integrated | yes | no | yes | yes | yes | yes |  | Managed through zKill adapter boundary. |
 
 ## Internal/helper/non-schedulable entries
