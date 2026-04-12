@@ -8,15 +8,12 @@ Rate limit: 1 request per second (zKB public API guideline).
 """
 from __future__ import annotations
 
-import gzip
 import json
 import logging
+import subprocess
 import time
-import urllib.error
-import urllib.request
 from typing import Any
 
-from .http_client import ipv4_opener
 from .jobs import run_killmail_r2z2_stream
 
 logger = logging.getLogger("supplycore.zkill_adapter")
@@ -55,39 +52,37 @@ class ZKillAdapter:
         self,
         url: str,
         timeout_seconds: int = DEFAULT_TIMEOUT,
-        accept_gzip: bool = True,
     ) -> tuple[int, str]:
-        """HTTP GET with rate limiting and retries.  Returns (status, body)."""
-        headers: dict[str, str] = {
-            "Accept": "application/json",
-            "User-Agent": self._user_agent,
-        }
-        if accept_gzip:
-            headers["Accept-Encoding"] = "gzip"
+        """HTTP GET via curl with rate limiting and retries.
 
-        request = urllib.request.Request(url, headers=headers)
+        Uses ``curl -4`` to avoid two problems at once:
+          1. IPv6 DNS resolves for zkillboard.com but the host has no IPv6
+             connectivity — ``-4`` forces IPv4.
+          2. Cloudflare (which fronts zKB) blocks Python's ``urllib`` TLS
+             fingerprint with 403.  ``curl`` has a normal TLS fingerprint
+             that Cloudflare accepts.
+        """
+        cmd = [
+            "curl", "-4", "-s",
+            "-o", "-",           # body to stdout
+            "-w", "\n%{http_code}",  # status code on last line
+            "--compressed",      # handle gzip/deflate transparently
+            "--connect-timeout", str(min(timeout_seconds, 10)),
+            "--max-time", str(timeout_seconds),
+            "-H", f"User-Agent: {self._user_agent}",
+            "-H", "Accept: application/json",
+            url,
+        ]
 
         for attempt in range(MAX_RETRIES + 1):
             self._rate_limit_wait()
             self._record_request()
             try:
-                with ipv4_opener.open(request, timeout=timeout_seconds) as response:
-                    status = int(getattr(response, "status", response.getcode()))
-                    body = response.read()
-                    if response.headers.get("Content-Encoding") == "gzip":
-                        body = gzip.decompress(body)
-                    if isinstance(body, bytes):
-                        body = body.decode("utf-8", errors="replace")
-                    return status, body
-            except urllib.error.HTTPError as error:
-                status = int(error.code)
-                if status == 429 and attempt < MAX_RETRIES:
-                    wait = RETRY_BACKOFF_SECONDS * (attempt + 1)
-                    logger.warning("zKB 429 rate-limited, backing off %.1fs", wait)
-                    time.sleep(wait)
-                    continue
-                return status, ""
-            except (urllib.error.URLError, OSError, TimeoutError) as error:
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True,
+                    timeout=timeout_seconds + 5,
+                )
+            except (subprocess.TimeoutExpired, OSError) as error:
                 if attempt < MAX_RETRIES:
                     wait = RETRY_BACKOFF_SECONDS * (attempt + 1)
                     logger.warning("zKB request failed (%s), retrying in %.1fs", error, wait)
@@ -95,6 +90,32 @@ class ZKillAdapter:
                     continue
                 logger.warning("zKB request failed for %s after %d attempts: %s", url, MAX_RETRIES + 1, error)
                 return 0, ""
+
+            # curl writes body then \n{http_code} via -w
+            raw = result.stdout
+            last_nl = raw.rfind("\n")
+            if last_nl == -1:
+                return 0, ""
+            body = raw[:last_nl]
+            status_str = raw[last_nl + 1:].strip()
+            status = int(status_str) if status_str.isdigit() else 0
+
+            if status == 429 and attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * (attempt + 1)
+                logger.warning("zKB 429 rate-limited, backing off %.1fs", wait)
+                time.sleep(wait)
+                continue
+
+            if status == 0 and result.returncode != 0 and attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF_SECONDS * (attempt + 1)
+                logger.warning(
+                    "curl failed (exit=%d) for %s, retrying in %.1fs",
+                    result.returncode, url, wait,
+                )
+                time.sleep(wait)
+                continue
+
+            return status, body
 
         return 0, ""
 
