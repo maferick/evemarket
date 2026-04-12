@@ -196,8 +196,13 @@ def run_compute_spy_network_cases(
                      breakdown, computed_at, computed_at, computed_at, MODEL_VERSION,
                      computed_at, run_id),
                 )
-                cid_rows = db.fetch_all("SELECT LAST_INSERT_ID() AS cid")
-                case_id = int(cid_rows[0]["cid"])
+                cid_rows = db.fetch_all(
+                    """SELECT case_id FROM spy_network_cases
+                       WHERE community_source='spy_ring_projection'
+                         AND community_id=%s AND model_version=%s""",
+                    (comm_id, MODEL_VERSION),
+                )
+                case_id = int(cid_rows[0]["case_id"])
                 cases_created += 1
 
             # Refresh members (DELETE + INSERT within same flow)
