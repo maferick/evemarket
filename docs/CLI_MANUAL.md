@@ -775,6 +775,7 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `compute_identity_resolution` | Spy detection Phase 3 — infer probable shared-operator / alt links between characters |
 | `graph_spy_ring_projection` | Spy detection Phase 4 — dedicated GDS projection for spy ring detection |
 | `compute_spy_network_cases` | Spy detection Phase 4 — spy network investigation cases with lifecycle |
+| `compute_spy_risk_profiles` | Spy detection Phase 5 — per-character explainable spy-risk score |
 | `log_to_issues` | Scan failures and create GitHub issues |
 
 ### All Sync Jobs
@@ -882,22 +883,23 @@ Phase 6: Intelligence Products
  30. compute_identity_resolution
  31. graph_spy_ring_projection
  32. compute_spy_network_cases
- 33. compute_alliance_dossiers
- 34. compute_threat_corridors
- 35. compute_bloom_entry_points
+ 33. compute_spy_risk_profiles
+ 34. compute_alliance_dossiers
+ 35. compute_threat_corridors
+ 36. compute_bloom_entry_points
 
 Phase 7: Cleanup & Economics
- 36. compute_graph_prune
- 37. graph_analyst_recalibration
- 38. graph_model_audit
- 39. graph_query_plan_validation
- 40. compute_buy_all
- 41. compute_signals
- 42. compute_economic_warfare
- 43. discord_webhook_filter
+ 38. compute_graph_prune
+ 39. graph_analyst_recalibration
+ 40. graph_model_audit
+ 41. graph_query_plan_validation
+ 42. compute_buy_all
+ 43. compute_signals
+ 44. compute_economic_warfare
+ 45. discord_webhook_filter
 
 Phase 8: Maintenance
- 44. log_to_issues
+ 46. log_to_issues
 ```
 
 ---

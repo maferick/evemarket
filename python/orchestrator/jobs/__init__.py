@@ -49,6 +49,7 @@ from .spy_training_split_builder import run_build_spy_training_split
 from .compute_identity_resolution import run_compute_identity_resolution
 from .graph_spy_ring_projection import run_graph_spy_ring_projection
 from .compute_spy_network_cases import run_compute_spy_network_cases
+from .compute_spy_risk_profiles import run_compute_spy_risk_profiles
 from .evewho_enrichment_sync import run_evewho_enrichment_sync
 from .evewho_alliance_member_sync import run_evewho_alliance_member_sync
 from .tracked_alliance_member_sync import run_tracked_alliance_member_sync
