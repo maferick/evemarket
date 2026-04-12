@@ -63,6 +63,8 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         {},
         "explain",
     ),
+    # Switched from profile→explain: shortestPath traversals are expensive
+    # and contributed to the 1020s tier timeout on compute-graph.
     (
         "community:betweenness_sampling",
         """
@@ -76,7 +78,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- graph_pipeline: topology metrics --
     (
@@ -98,6 +100,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         {},
         "profile",
     ),
+    # Switched from profile→explain: multi-hop traversal is expensive.
     (
         "topology:engagement_avoidance",
         """
@@ -112,7 +115,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- graph_pipeline: derived relationships --
     (
@@ -133,6 +136,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         "explain",
     ),
     # -- graph_pipeline: battle actor metrics --
+    # Switched from profile→explain: full Battle×BattleSide×Character scan.
     (
         "topology:battle_actor_metrics",
         """
@@ -146,9 +150,10 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- graph_temporal_metrics --
+    # Switched from profile→explain: multi-hop traversal with OPTIONAL MATCHes.
     (
         "temporal:windowed_metrics",
         """
@@ -166,7 +171,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- graph_pipeline: graph health snapshot --
     (
@@ -191,7 +196,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- graph_pipeline: fit overlap --
     (
@@ -205,7 +210,7 @@ _QUERY_INVENTORY: list[tuple[str, str, dict[str, Any], str]] = [
         LIMIT 100
         """,
         {},
-        "profile",
+        "explain",
     ),
     # -- community detection: bridge detection --
     (

@@ -932,15 +932,23 @@ def run_compute_graph_prune(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None =
 
 
 def _upsert_table(db: SupplyCoreDb, table_name: str, columns: str, placeholders: str, rows: list[tuple[Any, ...]]) -> None:
+    """Replace table contents atomically in a single transaction.
+
+    Previously DELETE and INSERT ran in separate transactions which left a
+    window for concurrent readers/writers to grab conflicting locks, causing
+    MySQL error 1213 (deadlock) on tables like character_graph_intelligence.
+    """
     batch_size = DEFAULT_BATCH_SIZE
-    db.run_in_transaction(lambda _conn, cur: cur.execute(f"DELETE FROM {table_name}"))
-    for offset in range(0, len(rows), batch_size):
-        chunk = rows[offset : offset + batch_size]
-        db.run_in_transaction(
-            lambda _conn, cur, c=chunk: cur.executemany(
-                f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})", c
+
+    def _do_replace(_conn, cur):
+        cur.execute(f"DELETE FROM {table_name}")
+        for offset in range(0, len(rows), batch_size):
+            chunk = rows[offset : offset + batch_size]
+            cur.executemany(
+                f"INSERT IGNORE INTO {table_name} ({columns}) VALUES ({placeholders})", chunk
             )
-        )
+
+    db.run_in_transaction(_do_replace, max_retries=3)
 
 
 
