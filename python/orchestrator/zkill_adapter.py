@@ -19,7 +19,13 @@ from .jobs import run_killmail_r2z2_stream
 logger = logging.getLogger("supplycore.zkill_adapter")
 
 ZKB_API_BASE = "https://zkillboard.com/api"
-DEFAULT_USER_AGENT = "SupplyCore Intelligence Platform / contact@supplycore.app"
+# Contact / identity string sent to zKB via Maintainer header.
+# We do NOT override curl's default User-Agent because Cloudflare
+# (which fronts zKB) blocks many custom UA strings with 403.
+DEFAULT_MAINTAINER = "SupplyCore/1.0 contact@supplycore.app"
+
+# Kept for backwards compatibility with callers that reference it.
+DEFAULT_USER_AGENT = DEFAULT_MAINTAINER
 RATE_LIMIT_DELAY = 1.0  # seconds between requests (zKB guideline)
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 2.0
@@ -58,9 +64,9 @@ class ZKillAdapter:
         Uses ``curl -4`` to avoid two problems at once:
           1. IPv6 DNS resolves for zkillboard.com but the host has no IPv6
              connectivity — ``-4`` forces IPv4.
-          2. Cloudflare (which fronts zKB) blocks Python's ``urllib`` TLS
-             fingerprint with 403.  ``curl`` has a normal TLS fingerprint
-             that Cloudflare accepts.
+          2. Cloudflare (which fronts zKB) blocks custom User-Agent strings
+             with 403.  We let curl use its default UA and pass our identity
+             via the ``Maintainer`` header instead.
         """
         cmd = [
             "curl", "-4", "-s",
@@ -69,7 +75,7 @@ class ZKillAdapter:
             "--compressed",      # handle gzip/deflate transparently
             "--connect-timeout", str(min(timeout_seconds, 10)),
             "--max-time", str(timeout_seconds),
-            "-H", f"User-Agent: {self._user_agent}",
+            "-H", f"Maintainer: {self._user_agent}",
             "-H", "Accept: application/json",
             url,
         ]
