@@ -180,6 +180,7 @@ systemd (lane-based execution model)
 ├── supplycore-lane-compute-misc.service      ─► Alliance dossiers, market intel, map compute
 ├── supplycore-lane-maintenance.service       ─► Cleanup, repair, recalibration
 ├── supplycore-esi-continuous.service         ─► Continuous ESI lookup daemon (outside scheduler)
+├── supplycore-zkb-repair.service            ─► Continuous zKB metadata repair daemon (15M+ killmails)
 ├── supplycore-zkill.service                  ─► Dedicated zKill stream worker
 ├── supplycore-evewho-runner.service          ─► Dedicated EveWho alliance lookup runner
 └── supplycore-influx-rollup-export.timer     ─► Scheduled InfluxDB export
@@ -199,7 +200,7 @@ Fallback: supplycore-loop-runner.service      ─► All jobs in one process (mo
 | **compute-cip** | Character Intelligence Profile correlation/event pipeline |
 | **compute-spy** | Spy detection platform — identity resolution, spy rings, risk profiles, shadow ML |
 | **compute-misc** | Alliance dossiers, market intelligence, map compute |
-| **continuous** | ESI lookup jobs managed by dedicated continuous worker daemon |
+| **continuous** | Jobs managed by dedicated continuous worker daemons (ESI lookups, zKB repair) |
 | **maintenance** | Low-priority cleanup — cache expiry, repair, audit, recalibration |
 | **zKill** | Always-on R2Z2 killmail stream ingestion (dedicated worker) |
 
@@ -214,6 +215,7 @@ Fallback: supplycore-loop-runner.service      ─► All jobs in one process (mo
 7. Compute lanes use `--no-tier-barriers` for dependency-aware dispatch (no hard tier timeout)
 8. Adaptive timeout tracking learns actual job durations and adjusts budgets via EWMA
 9. ESI continuous jobs run outside the scheduler in a tight-loop daemon (`esi-continuous`)
+10. Killmail zKB repair runs in its own dedicated daemon (`zkb-repair`) to drain 15M+ backlog
 
 ---
 

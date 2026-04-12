@@ -390,6 +390,10 @@ INSTALL_ESI_CONTINUOUS=false
 if prompt_yes_no "Install the ESI continuous worker (drains character affiliation/metadata/enrichment queues)?" "Y"; then
   INSTALL_ESI_CONTINUOUS=true
 fi
+INSTALL_ZKB_REPAIR=false
+if prompt_yes_no "Install the zKB repair worker (backfills missing zKillboard metadata for 15M+ killmails)?" "Y"; then
+  INSTALL_ZKB_REPAIR=true
+fi
 
 # ===========================  Validation  =================================
 
@@ -509,6 +513,9 @@ fi
 if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
   render_unit "${REPO_ROOT}/ops/systemd/supplycore-esi-continuous.service" "${SYSTEMD_DIR}/supplycore-esi-continuous.service"
 fi
+if [[ ${INSTALL_ZKB_REPAIR} == true ]]; then
+  render_unit "${REPO_ROOT}/ops/systemd/supplycore-zkb-repair.service" "${SYSTEMD_DIR}/supplycore-zkb-repair.service"
+fi
 
 # ===========================  Enable and start  ===========================
 
@@ -583,6 +590,9 @@ fi
 if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
   services_to_enable+=("supplycore-esi-continuous.service")
 fi
+if [[ ${INSTALL_ZKB_REPAIR} == true ]]; then
+  services_to_enable+=("supplycore-zkb-repair.service")
+fi
 
 start_services "${services_to_enable[@]}"
 
@@ -624,6 +634,9 @@ if [[ ${INSTALL_AI_WORKER} == true ]]; then
 fi
 if [[ ${INSTALL_ESI_CONTINUOUS} == true ]]; then
   echo "  systemctl status supplycore-esi-continuous.service"
+fi
+if [[ ${INSTALL_ZKB_REPAIR} == true ]]; then
+  echo "  systemctl status supplycore-zkb-repair.service"
 fi
 echo
 echo "Run any registered job manually:"

@@ -58,6 +58,7 @@ CORE_UNITS=(
   supplycore-lane-compute-spy.service
   supplycore-lane-maintenance.service
   supplycore-esi-continuous.service
+  supplycore-zkb-repair.service
   supplycore-zkill.service
   supplycore-evewho-runner.service
   supplycore-backfill-runner.service

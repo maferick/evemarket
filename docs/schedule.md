@@ -182,7 +182,7 @@ Which execution lane (systemd service) runs this job:
 | `compute-cip` | Character Intelligence Profile correlation/event pipeline |
 | `compute-spy` | Spy detection platform (identity resolution, rings, risk, shadow ML) |
 | `compute-misc` | Alliance dossiers, market intelligence, map compute |
-| `continuous` | ESI lookup jobs managed by the dedicated ESI continuous worker daemon |
+| `continuous` | Jobs managed by dedicated continuous worker daemons (ESI lookups, zKB repair) |
 | `maintenance` | Cleanup, repair, recalibration |
 
 **`freshness_sensitivity`**
@@ -401,6 +401,45 @@ sudo systemctl enable --now supplycore-esi-continuous.service
 
 # Manual / debugging
 python bin/python_orchestrator.py esi-continuous --app-root /var/www/SupplyCore --once
+```
+
+---
+
+## zKB Repair Worker
+
+The `killmail_zkb_repair` job backfills missing zKillboard metadata (totalValue,
+points) for killmail_events rows. With 15M+ killmails to process at ~500 per
+batch with 1s API rate limiting, this needs its own dedicated daemon so it
+doesn't block the maintenance lane or get killed by scheduler timeouts.
+
+```
+supplycore-zkb-repair.service
+└── killmail_zkb_repair  — backfill missing zKillboard metadata for killmail_events
+```
+
+### Behavior
+
+- Runs the `killmail_zkb_repair` processor in a tight loop
+- Each cycle internally loops through batches until it exhausts available work
+- If `total_found == 0` (backlog drained), sleeps 6x the idle sleep (default: 3 minutes)
+- Normal cycles sleep briefly (`--idle-sleep`, default 30s)
+- On error, backs off (`--error-backoff`, default 60s)
+- Memory gate aborts the process for systemd restart if RSS exceeds `--memory-max-gb`
+
+### Configuration
+
+This job uses `lane: "continuous"` in `worker_registry.py`. The loop runner
+recognizes this lane but never dispatches it — it is managed exclusively
+by the zKB repair worker daemon.
+
+### Running
+
+```bash
+# Managed by systemd
+sudo systemctl enable --now supplycore-zkb-repair.service
+
+# Manual / debugging
+python bin/python_orchestrator.py zkb-repair --app-root /var/www/SupplyCore --once
 ```
 
 ---
