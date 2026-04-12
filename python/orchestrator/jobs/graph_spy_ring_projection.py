@@ -12,6 +12,7 @@ block to avoid memory leaks.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from datetime import UTC, datetime
@@ -21,7 +22,9 @@ from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
+from ..neo4j import Neo4jClient, Neo4jConfig
 
+logger = logging.getLogger(__name__)
 
 PROJECTION_NAME = "spy_ring_projection"
 
@@ -33,6 +36,15 @@ CROSS_SIDE_MIN_COUNT = 1
 
 def _now_sql() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _has_gds(client: Neo4jClient) -> bool:
+    """Check if the Neo4j Graph Data Science plugin is available."""
+    try:
+        result = client.query("RETURN gds.version() AS v")
+        return len(result) > 0
+    except Exception:
+        return False
 
 
 def run_graph_spy_ring_projection(
@@ -60,22 +72,24 @@ def run_graph_spy_ring_projection(
     rel_dist: dict[str, int] = {}
 
     try:
-        # If no Neo4j connection, build a MariaDB-only summary of the
-        # projection (sufficient for compute_spy_network_cases to work
-        # from MariaDB tables directly).
-        if not neo4j_raw:
-            return _mariadb_only_projection(db, job, run_id, computed_at, started)
+        # Build Neo4j client from runtime config
+        config = Neo4jConfig.from_runtime(neo4j_raw or {})
+        if not config.enabled:
+            return _mariadb_only_projection(db, job, run_id, computed_at, started,
+                                            reason="neo4j_disabled")
 
-        driver = neo4j_raw.get("driver")
-        if not driver:
-            return _mariadb_only_projection(db, job, run_id, computed_at, started)
+        client = Neo4jClient(config)
+
+        # Check GDS availability
+        if not _has_gds(client):
+            return _mariadb_only_projection(db, job, run_id, computed_at, started,
+                                            reason="no_gds_plugin")
 
         # Drop stale projection if it exists
-        with driver.session() as session:
-            try:
-                session.run(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
-            except Exception:
-                pass
+        try:
+            client.query(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
+        except Exception:
+            pass
 
         # Build projection via Cypher projection — union of edge sources
         # We project Character nodes with weighted edges from multiple sources
@@ -89,46 +103,46 @@ def run_graph_spy_ring_projection(
         RETURN id(a) AS source, id(b) AS target, r.count AS weight, 'cross_side' AS type
         """
 
-        with driver.session() as session:
-            # Try GDS cypher projection
-            try:
-                result = session.run(
-                    """
-                    CALL gds.graph.project.cypher($name, $nodeQuery, $relQuery, {})
-                    YIELD graphName, nodeCount, relationshipCount
-                    RETURN graphName, nodeCount, relationshipCount
-                    """,
-                    name=PROJECTION_NAME, nodeQuery=cypher_node, relQuery=cypher_rel,
-                )
-                record = result.single()
-                if record:
-                    node_count = record["nodeCount"]
-                    edge_count = record["relationshipCount"]
-            except Exception:
-                # GDS not available — fall back to MariaDB-only
-                return _mariadb_only_projection(db, job, run_id, computed_at, started)
+        # Try GDS cypher projection
+        try:
+            rows = client.query(
+                """
+                CALL gds.graph.project.cypher($name, $nodeQuery, $relQuery, {})
+                YIELD graphName, nodeCount, relationshipCount
+                RETURN graphName, nodeCount, relationshipCount
+                """,
+                {"name": PROJECTION_NAME, "nodeQuery": cypher_node, "relQuery": cypher_rel},
+                timeout_seconds=120,
+            )
+            if rows:
+                node_count = rows[0].get("nodeCount", 0)
+                edge_count = rows[0].get("relationshipCount", 0)
+        except Exception as exc:
+            logger.warning("GDS cypher projection failed: %s — falling back to MariaDB-only", exc)
+            return _mariadb_only_projection(db, job, run_id, computed_at, started,
+                                            reason="gds_projection_failed")
 
-            # Run Leiden community detection on the projection
-            try:
-                session.run(
-                    """
-                    CALL gds.leiden.write($name, {
-                        writeProperty: 'spy_ring_community',
-                        maxLevels: 10,
-                        gamma: 1.0,
-                        theta: 0.01
-                    })
-                    """,
-                    name=PROJECTION_NAME,
-                )
-            except Exception:
-                pass  # Leiden not available — communities from MariaDB fallback
+        # Run Leiden community detection on the projection
+        try:
+            client.query(
+                f"""
+                CALL gds.leiden.write('{PROJECTION_NAME}', {{
+                    writeProperty: 'spy_ring_community',
+                    maxLevels: 10,
+                    gamma: 1.0,
+                    theta: 0.01
+                }})
+                """,
+                timeout_seconds=120,
+            )
+        except Exception as exc:
+            logger.warning("Leiden community detection failed: %s — communities from MariaDB fallback", exc)
 
-            # Drop the projection — always clean up
-            try:
-                session.run(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
-            except Exception:
-                pass
+        # Drop the projection — always clean up
+        try:
+            client.query(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
+        except Exception:
+            pass
 
         rel_dist = {"copresence": edge_count}
 
@@ -154,6 +168,7 @@ def run_graph_spy_ring_projection(
 
 def _mariadb_only_projection(
     db: SupplyCoreDb, job: Any, run_id: str, computed_at: str, started: float,
+    reason: str = "no_gds_driver",
 ) -> dict[str, Any]:
     """When GDS is unavailable, record the run as success with zero projection.
 
@@ -162,14 +177,14 @@ def _mariadb_only_projection(
     directly — it does not strictly require a live GDS projection.
     """
     _finish_projection_run(db, run_id, "success", 0, 0, {},
-                            config={"mode": "mariadb_only", "reason": "no_gds_driver"})
+                            config={"mode": "mariadb_only", "reason": reason})
 
     duration_ms = int((time.perf_counter() - started) * 1000)
     result = JobResult.success(
         job_key="graph_spy_ring_projection",
-        summary="MariaDB-only mode (no GDS driver). Cases will use graph_community_assignments.",
+        summary=f"MariaDB-only mode ({reason}). Cases will use graph_community_assignments.",
         rows_processed=0, rows_written=0, duration_ms=duration_ms,
-        meta={"run_id": run_id, "mode": "mariadb_only"},
+        meta={"run_id": run_id, "mode": "mariadb_only", "reason": reason},
     ).to_dict()
     finish_job_run(db, job, status="success", rows_processed=0, rows_written=0, meta=result)
     return result
