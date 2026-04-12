@@ -30,12 +30,9 @@ Queue table: ``character_killmail_queue``
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
@@ -46,12 +43,10 @@ from ..bridge import PhpBridge
 from ..db import SupplyCoreDb
 from ..esi_client import EsiClient
 from ..esi_rate_limiter import shared_limiter
-from ..http_client import ipv4_opener
 from ..worker_runtime import utc_now_iso
+from ..zkill_adapter import DEFAULT_USER_AGENT as _ZKB_USER_AGENT, ZKillAdapter
 
 logger = logging.getLogger("supplycore.character_killmail_sync")
-
-_ZKB_API_BASE = "https://zkillboard.com/api"
 
 # ---------------------------------------------------------------------------
 # Limits
@@ -79,72 +74,8 @@ _BACKFILL_CUTOFF_DATE = "2024-01-01"
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers (same pattern as killmail_full_history_backfill)
+# zKillboard access — routed through the shared ZKillAdapter
 # ---------------------------------------------------------------------------
-
-def _http_get(url: str, user_agent: str, timeout: int = 30) -> tuple[int, str]:
-    """HTTP GET with gzip support via the shared IPv4 opener."""
-    headers: dict[str, str] = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "User-Agent": user_agent,
-    }
-    request = urllib.request.Request(url, headers=headers)
-    try:
-        with ipv4_opener.open(request, timeout=timeout) as response:
-            status = int(getattr(response, "status", response.getcode()))
-            body = response.read()
-            if response.headers.get("Content-Encoding") == "gzip":
-                import gzip
-                body = gzip.decompress(body)
-            if isinstance(body, bytes):
-                body = body.decode("utf-8", errors="replace")
-            return status, body
-    except urllib.error.HTTPError as exc:
-        return int(exc.code), ""
-    except (urllib.error.URLError, OSError, TimeoutError) as exc:
-        logger.warning("HTTP request failed for %s: %s", url, exc)
-        return 0, ""
-
-
-def _fetch_character_page(
-    character_id: int, page: int, user_agent: str
-) -> list[dict[str, Any]]:
-    """Fetch one page of killmails for a character from zKillboard.
-
-    Returns a list of full killmail entries (each containing ESI body and zkb
-    metadata) or an empty list on error / no more data.
-    """
-    url = f"{_ZKB_API_BASE}/characterID/{character_id}/page/{page}/"
-    for attempt in range(3):
-        status, body = _http_get(url, user_agent)
-        if status == 200 and body.strip():
-            try:
-                data = json.loads(body)
-            except json.JSONDecodeError:
-                logger.warning(
-                    "Invalid JSON from %s attempt %d", url, attempt + 1
-                )
-                time.sleep(2 ** attempt)
-                continue
-            if isinstance(data, list):
-                return data
-            return []
-        if status == 404:
-            return []
-        if status == 429:
-            logger.warning("zKB rate limited on %s, waiting 60s", url)
-            time.sleep(60)
-            continue
-        if status == 0:
-            time.sleep(2 ** attempt)
-            continue
-        logger.warning(
-            "zKB character page fetch: status=%d url=%s attempt=%d",
-            status, url, attempt + 1,
-        )
-        time.sleep(2 ** attempt)
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +357,7 @@ def _process_entries(
 def _sync_incremental(
     bridge: PhpBridge,
     character_id: int,
-    user_agent: str,
+    zkb_adapter: ZKillAdapter,
     run_start: float,
     esi_client: EsiClient,
     gateway: Any = None,
@@ -453,8 +384,7 @@ def _sync_incremental(
             )
             break
 
-        entries = _fetch_character_page(character_id, page, user_agent)
-        time.sleep(1)  # rate limit: 1 req/sec to zKB
+        entries = zkb_adapter.fetch_character_page(character_id, page)
 
         if not entries:
             break
@@ -522,7 +452,7 @@ def _sync_incremental(
 def _sync_backfill(
     bridge: PhpBridge,
     character_id: int,
-    user_agent: str,
+    zkb_adapter: ZKillAdapter,
     last_page_fetched: int,
     run_start: float,
     esi_client: EsiClient,
@@ -565,8 +495,7 @@ def _sync_backfill(
             )
             break
 
-        entries = _fetch_character_page(character_id, page, user_agent)
-        time.sleep(1)  # rate limit: 1 req/sec to zKB
+        entries = zkb_adapter.fetch_character_page(character_id, page)
         pages_fetched += 1
 
         if not entries:
@@ -751,8 +680,9 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
     run_start = time.perf_counter()
     started_at = utc_now_iso()
 
-    # Fetch user agent from bridge context or use default.
-    user_agent = "SupplyCore character-killmail-sync/1.0"
+    # Build the zKillboard adapter (rate-limited, proper UA with contact
+    # info).  Optionally override UA from the bridge context.
+    user_agent = _ZKB_USER_AGENT
     try:
         ctx_response = bridge.call("character-killmail-sync-context")
         ctx = ctx_response.get("context") or {}
@@ -760,6 +690,8 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
             user_agent = str(ctx["user_agent"])
     except Exception:
         logger.info("No custom sync context available, using default user agent")
+
+    zkb_adapter = ZKillAdapter(user_agent=user_agent)
 
     # Build the shared ESI client for full killmail body fetches. Rate
     # limiting is handled centrally via the process-wide shared limiter.
@@ -857,7 +789,7 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
             if mode == "backfill" and not is_backfill_complete:
                 # Backfill: walk pages from checkpoint.
                 result = _sync_backfill(
-                    bridge, character_id, user_agent,
+                    bridge, character_id, zkb_adapter,
                     last_page_fetched, run_start,
                     esi_client, esi_gateway,
                 )
@@ -884,7 +816,7 @@ def run_character_killmail_sync(db: SupplyCoreDb, raw_config: dict[str, Any] | N
             else:
                 # Incremental: fetch recent pages only.
                 result = _sync_incremental(
-                    bridge, character_id, user_agent, run_start,
+                    bridge, character_id, zkb_adapter, run_start,
                     esi_client, esi_gateway,
                 )
 

@@ -119,6 +119,25 @@ class ZKillAdapter:
             return data[0].get("zkb") or {}
         return {}
 
+    def fetch_character_page(
+        self,
+        character_id: int,
+        page: int,
+    ) -> list[dict[str, Any]]:
+        """Fetch one page of killmails for a character.  Returns list of dicts."""
+        url = f"{ZKB_API_BASE}/characterID/{character_id}/page/{page}/"
+        status, body = self._fetch(url)
+        if status != 200:
+            if status not in (0, 429):
+                logger.warning(
+                    "zKB character page fetch: status=%d url=%s", status, url,
+                )
+            return []
+        data = self._parse_json(body)
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
     def fetch_entity_page(
         self,
         entity_type: str,
