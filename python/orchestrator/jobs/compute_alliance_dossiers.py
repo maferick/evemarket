@@ -88,6 +88,10 @@ else:
 BATCH_SIZE = 200
 RECENT_DAYS = 30
 TOP_K = 10
+# Lookback window for the alliance activity scan.  Previously unbounded,
+# which forced a full-table join of killmail_attackers × killmail_events
+# and consistently exceeded the 720s tier timeout.
+ACTIVITY_LOOKBACK_DAYS = 180
 
 # Upper bound for DECIMAL(14,4) columns (alliance_dossiers.avg_engagement_rate,
 # avg_token_participation, avg_overperformance). Values derived from raw
@@ -131,8 +135,10 @@ def _load_alliances_with_activity(db: SupplyCoreDb, min_killmails: int = 5) -> l
     """Load alliances with killmail activity from attacker data.
 
     An alliance qualifies if its members appear as attackers on at least
-    ``min_killmails`` distinct killmails.  This captures all combat activity,
-    not just clustered battles.
+    ``min_killmails`` distinct killmails within the lookback window.  The
+    query is bounded to ``ACTIVITY_LOOKBACK_DAYS`` to avoid a full-table
+    scan of killmail_attackers × killmail_events (which consistently
+    exceeded the tier timeout).
     """
     return db.fetch_all(
         """
@@ -159,11 +165,12 @@ def _load_alliances_with_activity(db: SupplyCoreDb, min_killmails: int = 5) -> l
              ON emc.entity_type = 'alliance' AND emc.entity_id = ka.alliance_id
         WHERE ka.alliance_id IS NOT NULL AND ka.alliance_id > 0
           AND ke.zkb_npc = 0
+          AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s DAY)
         GROUP BY ka.alliance_id
         HAVING total_killmails >= %s
         ORDER BY recent_killmails DESC, total_killmails DESC
         """,
-        (RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, min_killmails),
+        (RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, RECENT_DAYS, ACTIVITY_LOOKBACK_DAYS, min_killmails),
     )
 
 
