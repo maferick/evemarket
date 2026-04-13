@@ -14922,28 +14922,145 @@ function db_pilot_search(string $query, int $limit = 30): array
         return [];
     }
     $safeLimit = max(1, min(100, $limit));
-    return db_select(
-        'SELECT
-            emc.entity_id AS character_id,
-            emc.entity_name AS character_name,
-            emc_a.entity_name AS alliance_name,
-            emc_c.entity_name AS corporation_name,
-            bp.alliance_id,
-            bp.corporation_id,
-            COUNT(DISTINCT bp.battle_id) AS battle_count,
-            tp.role_proxy AS fleet_function
-         FROM entity_metadata_cache emc
-         LEFT JOIN battle_participants bp ON bp.character_id = emc.entity_id
-         LEFT JOIN entity_metadata_cache emc_a ON emc_a.entity_type = "alliance" AND emc_a.entity_id = bp.alliance_id
-         LEFT JOIN entity_metadata_cache emc_c ON emc_c.entity_type = "corporation" AND emc_c.entity_id = bp.corporation_id
-         LEFT JOIN theater_participants tp ON tp.character_id = emc.entity_id
-         WHERE emc.entity_type = "character"
-           AND emc.entity_name LIKE ?
-         GROUP BY emc.entity_id
-         ORDER BY battle_count DESC, emc.entity_name ASC
+
+    // Step 1: find candidate characters via the indexed PK prefix on
+    // entity_metadata_cache. The LIKE predicate is a leading-wildcard scan,
+    // but the result set is bounded by $safeLimit so downstream enrichment
+    // stays cheap.
+    //
+    // The previous implementation joined battle_participants AND
+    // theater_participants in a single GROUP BY query. Because neither join
+    // is bounded per character (a pilot can have hundreds of battle rows
+    // and dozens of theater rows), the cartesian explosion forced MariaDB
+    // to materialize millions of rows before COUNT(DISTINCT) could dedupe
+    // them, and pilot-lookup.php would time out.
+    $candidates = db_select(
+        'SELECT entity_id AS character_id, entity_name AS character_name
+         FROM entity_metadata_cache
+         WHERE entity_type = "character"
+           AND entity_name LIKE ?
+         ORDER BY entity_name ASC
          LIMIT ' . $safeLimit,
         ['%' . $q . '%']
     );
+    if ($candidates === []) {
+        return [];
+    }
+
+    $charIds = array_map(static fn (array $r): int => (int) $r['character_id'], $candidates);
+    $placeholders = implode(',', array_fill(0, count($charIds), '?'));
+
+    // Step 2: battle_count per character.
+    // Uses idx_battle_participants_character (character_id, battle_id) and
+    // only touches rows for the bounded candidate set.
+    $battleCountRows = db_select(
+        'SELECT character_id, COUNT(DISTINCT battle_id) AS battle_count
+         FROM battle_participants
+         WHERE character_id IN (' . $placeholders . ')
+         GROUP BY character_id',
+        $charIds
+    );
+    $battleCounts = [];
+    foreach ($battleCountRows as $r) {
+        $battleCounts[(int) $r['character_id']] = (int) ($r['battle_count'] ?? 0);
+    }
+
+    // Step 3: most-recent alliance/corp per character (groupwise max on
+    // computed_at). Bounded to the candidate set via character_id IN (...).
+    $recentRows = db_select(
+        'SELECT bp.character_id, bp.alliance_id, bp.corporation_id
+         FROM battle_participants bp
+         INNER JOIN (
+             SELECT character_id, MAX(computed_at) AS max_computed
+             FROM battle_participants
+             WHERE character_id IN (' . $placeholders . ')
+             GROUP BY character_id
+         ) latest
+           ON latest.character_id = bp.character_id
+          AND latest.max_computed = bp.computed_at
+         WHERE bp.character_id IN (' . $placeholders . ')',
+        array_merge($charIds, $charIds)
+    );
+    $recentByChar = [];
+    foreach ($recentRows as $r) {
+        $cid = (int) $r['character_id'];
+        if (!isset($recentByChar[$cid])) {
+            $recentByChar[$cid] = [
+                'alliance_id'    => $r['alliance_id']    !== null ? (int) $r['alliance_id']    : null,
+                'corporation_id' => $r['corporation_id'] !== null ? (int) $r['corporation_id'] : null,
+            ];
+        }
+    }
+
+    // Step 4: role_proxy per character from theater_participants.
+    // Relies on idx_theater_participants_character from
+    // database/migrations/20260413_theater_participant_character_index.sql.
+    $roleRows = db_select(
+        'SELECT character_id, role_proxy, entry_time
+         FROM theater_participants
+         WHERE character_id IN (' . $placeholders . ')
+           AND role_proxy IS NOT NULL
+         ORDER BY entry_time DESC',
+        $charIds
+    );
+    $roleByChar = [];
+    foreach ($roleRows as $r) {
+        $cid = (int) $r['character_id'];
+        // First row (latest entry_time) wins.
+        if (!isset($roleByChar[$cid])) {
+            $roleByChar[$cid] = (string) $r['role_proxy'];
+        }
+    }
+
+    // Step 5: resolve alliance/corporation names in one batched lookup.
+    $allianceIds = [];
+    $corporationIds = [];
+    foreach ($recentByChar as $rc) {
+        if ($rc['alliance_id']    !== null && $rc['alliance_id']    > 0) $allianceIds[]    = $rc['alliance_id'];
+        if ($rc['corporation_id'] !== null && $rc['corporation_id'] > 0) $corporationIds[] = $rc['corporation_id'];
+    }
+    $allianceNames    = [];
+    $corporationNames = [];
+    if ($allianceIds !== []) {
+        foreach (db_entity_metadata_cache_get_many('alliance', $allianceIds) as $row) {
+            $allianceNames[(int) $row['entity_id']] = (string) ($row['entity_name'] ?? '');
+        }
+    }
+    if ($corporationIds !== []) {
+        foreach (db_entity_metadata_cache_get_many('corporation', $corporationIds) as $row) {
+            $corporationNames[(int) $row['entity_id']] = (string) ($row['entity_name'] ?? '');
+        }
+    }
+
+    // Step 6: assemble and sort (battle_count DESC, then name ASC — matches
+    // the ordering of the original single-query implementation).
+    $results = [];
+    foreach ($candidates as $c) {
+        $cid = (int) $c['character_id'];
+        $recent = $recentByChar[$cid] ?? ['alliance_id' => null, 'corporation_id' => null];
+        $allianceId    = $recent['alliance_id'];
+        $corporationId = $recent['corporation_id'];
+        $results[] = [
+            'character_id'     => $cid,
+            'character_name'   => (string) ($c['character_name'] ?? ''),
+            'alliance_id'      => $allianceId,
+            'corporation_id'   => $corporationId,
+            'alliance_name'    => $allianceId    !== null ? ($allianceNames[$allianceId]       ?? null) : null,
+            'corporation_name' => $corporationId !== null ? ($corporationNames[$corporationId] ?? null) : null,
+            'battle_count'     => $battleCounts[$cid] ?? 0,
+            'fleet_function'   => $roleByChar[$cid] ?? null,
+        ];
+    }
+
+    usort($results, static function (array $a, array $b): int {
+        $cmp = ($b['battle_count'] ?? 0) <=> ($a['battle_count'] ?? 0);
+        if ($cmp !== 0) {
+            return $cmp;
+        }
+        return strcmp((string) ($a['character_name'] ?? ''), (string) ($b['character_name'] ?? ''));
+    });
+
+    return $results;
 }
 
 function db_pilot_profile(int $characterId): ?array
