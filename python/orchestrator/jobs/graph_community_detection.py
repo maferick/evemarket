@@ -13,7 +13,13 @@ from ..neo4j import Neo4jClient, Neo4jConfig
 logger = logging.getLogger(__name__)
 
 LABEL_PROPAGATION_ROUNDS = 8
+# Cypher fallback uses 3 iterations because each iteration is a full
+# pattern-match round-trip — anything higher is impractically slow.
+# Native GDS PageRank is C++-optimized and converges quickly, so we
+# match neo4j_ml_exploration.py's 40-iteration / tolerance settings.
 PAGERANK_ITERATIONS = 3
+GDS_PAGERANK_MAX_ITERATIONS = 40
+GDS_PAGERANK_TOLERANCE = 0.0001
 BETWEENNESS_SAMPLE_RATE = 0.01
 BETWEENNESS_MAX_PATH_LENGTH = 5
 BRIDGE_COMMUNITY_THRESHOLD = 2
@@ -93,8 +99,52 @@ def _drop_gds_projection(client: Neo4jClient) -> None:
 #  GDS-based algorithms
 # ---------------------------------------------------------------------------
 
-def _gds_label_propagation(client: Neo4jClient) -> None:
-    """Run GDS label propagation and write community_label back to nodes."""
+def _gds_community_detection(client: Neo4jClient) -> str:
+    """Run community detection and write community_label back to nodes.
+
+    Tries Leiden first (best modularity, hierarchical), then falls back
+    to Louvain, then to label propagation.  Mirrors the cascade used in
+    ``neo4j_ml_exploration.py`` so the two community-detection paths
+    agree on algorithm preference instead of one running LPA-only and
+    the other Leiden-first.
+
+    The projection is built with ``orientation: 'UNDIRECTED'`` in
+    ``_ensure_gds_projection``, which is what Leiden requires.
+
+    Returns the name of the algorithm that actually wrote the property.
+    """
+    # Leiden — preferred when available
+    try:
+        client.query(
+            f"""
+            CALL gds.leiden.write('{GDS_GRAPH_NAME}', {{
+                writeProperty: 'community_label',
+                maxLevels: 10,
+                gamma: 1.0,
+                theta: 0.01
+            }})
+            """,
+            timeout_seconds=180,
+        )
+        return "leiden"
+    except Exception as exc:
+        logger.info("GDS Leiden unavailable (%s) — trying Louvain", exc)
+
+    # Louvain — solid fallback, available in every modern GDS
+    try:
+        client.query(
+            f"""
+            CALL gds.louvain.write('{GDS_GRAPH_NAME}', {{
+                writeProperty: 'community_label'
+            }})
+            """,
+            timeout_seconds=180,
+        )
+        return "louvain"
+    except Exception as exc:
+        logger.info("GDS Louvain unavailable (%s) — falling back to label propagation", exc)
+
+    # Label propagation — last-resort GDS algorithm
     client.query(
         f"""
         CALL gds.labelPropagation.write('{GDS_GRAPH_NAME}', {{
@@ -104,19 +154,27 @@ def _gds_label_propagation(client: Neo4jClient) -> None:
         """,
         timeout_seconds=120,
     )
+    return "label_propagation"
 
 
 def _gds_pagerank(client: Neo4jClient) -> None:
-    """Run GDS PageRank and write pr score back to nodes."""
+    """Run GDS PageRank and write pr score back to nodes.
+
+    Native GDS PageRank is C++-optimized — using the 3-iteration cap
+    designed for the slow Cypher fallback writes essentially
+    un-converged scores.  Match the 40-iteration / tolerance settings
+    used in ``neo4j_ml_exploration.py`` so PageRank actually converges.
+    """
     client.query(
         f"""
         CALL gds.pageRank.write('{GDS_GRAPH_NAME}', {{
             writeProperty: 'pr',
-            maxIterations: {PAGERANK_ITERATIONS},
+            maxIterations: {GDS_PAGERANK_MAX_ITERATIONS},
+            tolerance: {GDS_PAGERANK_TOLERANCE},
             dampingFactor: 0.85
         }})
         """,
-        timeout_seconds=120,
+        timeout_seconds=180,
     )
 
 
@@ -360,10 +418,12 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
     if use_gds:
         use_gds = _ensure_gds_projection(client)
 
+    community_algo = "label_propagation"
     if use_gds:
         analytics_path = "gds"
         logger.info("Community detection: using GDS algorithms")
-        _gds_label_propagation(client)
+        community_algo = _gds_community_detection(client)
+        logger.info("Community detection: chose %s", community_algo)
         _gds_pagerank(client)
         _gds_betweenness(client)
         _drop_gds_projection(client)
@@ -390,7 +450,10 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
         "distinct_communities": int(community_count_row or 0),
         "bridge_characters": int(bridge_count or 0),
         "label_propagation_rounds": LABEL_PROPAGATION_ROUNDS,
-        "pagerank_iterations": PAGERANK_ITERATIONS,
+        "pagerank_iterations": (
+            GDS_PAGERANK_MAX_ITERATIONS if analytics_path == "gds" else PAGERANK_ITERATIONS
+        ),
+        "community_algo": community_algo,
         "analytics_path": analytics_path,
     }
     db.upsert_intelligence_snapshot(
@@ -403,7 +466,11 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
     duration_ms = int((time.perf_counter() - started) * 1000)
     return JobResult.success(
         job_key=job_name,
-        summary=f"Community detection ({analytics_path}): {rows_written} characters assigned to {community_count_row or 0} communities, {bridge_count or 0} bridges.",
+        summary=(
+            f"Community detection ({analytics_path}/{community_algo}): "
+            f"{rows_written} characters assigned to "
+            f"{community_count_row or 0} communities, {bridge_count or 0} bridges."
+        ),
         rows_processed=rows_written,
         rows_written=rows_written,
         rows_seen=rows_written,
@@ -412,5 +479,6 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
             "communities": int(community_count_row or 0),
             "bridges": int(bridge_count or 0),
             "analytics_path": analytics_path,
+            "community_algo": community_algo,
         },
     ).to_dict()
