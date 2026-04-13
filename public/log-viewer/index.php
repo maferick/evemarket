@@ -516,20 +516,34 @@ $attentionCount = $kpi['total_failed'] + $kpi['total_timeout'] + $kpi['total_ove
 <?php endif; ?>
 
 <!-- ═══════════════════════════════════════════════════════════════════════════
-     Log Files on Disk — collapsible, cleaner
+     Log Files on Disk — collapsible; each file also links to the structured
+     viewer (/log-viewer/file) which pretty-prints JSONL lane-*.log output.
      ══════════════════════════════════════════════════════════════════════════ -->
 <?php if ($logFiles !== []): ?>
 <section class="mt-8">
     <h2 class="section-title mb-4">Log Files</h2>
+    <p class="mb-3 text-xs text-slate-400">
+        Click <span class="text-sky-300">Open</span> on any lane-*.log or *.jsonl file
+        to load it in the structured viewer (filterable by level, search, tail length).
+    </p>
     <div class="space-y-2">
-        <?php foreach ($logFiles as $lf): ?>
+        <?php foreach ($logFiles as $lf):
+            $viewerHref = '/log-viewer/file?' . http_build_query(['name' => $lf['filename']]);
+        ?>
             <details class="group rounded-2xl border border-white/8 bg-white/[0.02]">
                 <summary class="flex cursor-pointer items-center justify-between gap-3 px-5 py-3 text-sm">
                     <div class="flex items-center gap-3">
                         <span class="font-medium text-white"><?= htmlspecialchars($lf['filename'], ENT_QUOTES) ?></span>
                         <span class="text-xs text-slate-400"><?= htmlspecialchars($lf['size_human'], ENT_QUOTES) ?></span>
                     </div>
-                    <span class="text-xs text-slate-500">modified <?= htmlspecialchars($lf['modified_relative'], ENT_QUOTES) ?></span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-xs text-slate-500">modified <?= htmlspecialchars($lf['modified_relative'], ENT_QUOTES) ?></span>
+                        <a href="<?= htmlspecialchars($viewerHref, ENT_QUOTES) ?>"
+                           class="rounded-md border border-sky-400/30 bg-sky-500/15 px-2.5 py-1 text-[0.7rem] font-medium text-sky-100 hover:bg-sky-500/25"
+                           onclick="event.stopPropagation();">
+                            Open
+                        </a>
+                    </div>
                 </summary>
                 <?php if ($lf['tail_lines'] !== []): ?>
                     <div class="border-t border-white/8 px-5 py-3">

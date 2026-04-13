@@ -58,9 +58,27 @@ $queryParams = $_GET;
 $buildPageUrl = static function (int $targetPage) use ($queryParams): string {
     $params = $queryParams;
     $params['page'] = max(1, $targetPage);
+    // Page-number navigation is only used on the search path; keyset cursors
+    // are orthogonal so make sure they don't leak into a page-number URL.
+    unset($params['cursor'], $params['dir']);
 
     return current_path() . '?' . http_build_query($params);
 };
+$buildCursorUrl = static function (?string $cursor, string $dir) use ($queryParams): string {
+    $params = $queryParams;
+    if ($cursor === null || $cursor === '') {
+        // "First page" shortcut — drop cursor and dir entirely.
+        unset($params['cursor'], $params['dir'], $params['page']);
+    } else {
+        $params['cursor'] = $cursor;
+        $params['dir'] = $dir === 'prev' ? 'prev' : 'next';
+        unset($params['page']);
+    }
+
+    $query = http_build_query($params);
+    return current_path() . ($query !== '' ? '?' . $query : '');
+};
+$overviewHasSearch = trim((string) ($_GET['q'] ?? '')) !== '';
 
 include __DIR__ . '/../../src/views/partials/header.php';
 if (function_exists('ob_flush')) { @ob_flush(); }
@@ -305,11 +323,27 @@ if (function_exists('ob_flush')) { @ob_flush(); }
             </label>
         </div>
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
-            <div class="text-sm text-muted">
-                Showing <?= (int) ($pagination['showing_from'] ?? 0) ?>-<?= (int) ($pagination['showing_to'] ?? 0) ?> of <?= number_format((int) ($pagination['total_items'] ?? 0)) ?> recorded losses
+            <?php
+                $totalItemsValue = $pagination['total_items'] ?? null;
+                $showingFrom = (int) ($pagination['showing_from'] ?? 0);
+                $showingTo = (int) ($pagination['showing_to'] ?? 0);
+            ?>
+            <div class="text-sm text-muted" data-loss-count-label>
+                <?php if ($totalItemsValue !== null): ?>
+                    Showing <?= $showingFrom ?>-<?= $showingTo ?> of <?= number_format((int) $totalItemsValue) ?> recorded losses
+                <?php else: ?>
+                    Showing <?= $showingFrom ?>-<?= $showingTo ?> recorded losses <span class="ml-1 text-xs text-slate-500" data-loss-count-suffix>· total counting…</span>
+                <?php endif; ?>
             </div>
-            <div class="flex flex-wrap gap-2">
-                <button type="submit" class="btn-primary">Apply filters</button>
+            <div class="flex flex-wrap items-center gap-2">
+                <span data-search-submit-spinner class="hidden items-center gap-2 text-xs text-muted" role="status" aria-live="polite">
+                    <svg class="h-4 w-4 animate-spin text-slate-300" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" class="opacity-25"></circle>
+                        <path d="M4 12a8 8 0 018-8" stroke="currentColor" stroke-width="3" stroke-linecap="round" class="opacity-75"></path>
+                    </svg>
+                    <span>Searching…</span>
+                </span>
+                <button type="submit" class="btn-primary" data-search-submit-btn>Apply filters</button>
                 <a href="<?= htmlspecialchars(current_path(), ENT_QUOTES) ?>" class="btn-secondary">Reset</a>
             </div>
         </div>
@@ -438,11 +472,48 @@ if (function_exists('ob_flush')) { @ob_flush(); }
         </table>
     </div>
 
+    <?php
+        $useKeyset = (bool) ($pagination['use_keyset'] ?? false);
+        $paginationNoSearch = !$overviewHasSearch;
+        $nextCursor = $pagination['next_cursor'] ?? null;
+        $prevCursor = $pagination['prev_cursor'] ?? null;
+        $pageNum = max(1, (int) ($pagination['page'] ?? 1));
+        $totalPagesValue = $pagination['total_pages'] ?? null;
+        $currentCursor = trim((string) ($_GET['cursor'] ?? ''));
+    ?>
     <div class="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm text-muted">
-        <p>Page <?= max(1, (int) ($pagination['page'] ?? 1)) ?> / <?= max(1, (int) ($pagination['total_pages'] ?? 1)) ?></p>
+        <?php if ($paginationNoSearch): ?>
+            <p data-loss-pagination-label>
+                <?php if ($useKeyset || $currentCursor !== ''): ?>
+                    Cursor view — newest first
+                <?php else: ?>
+                    Latest losses
+                <?php endif; ?>
+                <?php if ($totalPagesValue === null): ?>
+                    <span class="ml-2 text-xs text-slate-500" data-loss-pagination-total>· total pages: <span data-loss-pagination-total-value>counting…</span></span>
+                <?php else: ?>
+                    <span class="ml-2 text-xs text-slate-500">· <?= number_format((int) $totalPagesValue) ?> pages total</span>
+                <?php endif; ?>
+            </p>
+        <?php else: ?>
+            <p>Page <?= $pageNum ?> / <?= $totalPagesValue !== null ? max(1, (int) $totalPagesValue) : 1 ?></p>
+        <?php endif; ?>
         <div class="flex items-center gap-2">
-            <a href="<?= htmlspecialchars($buildPageUrl(((int) ($pagination['page'] ?? 1)) - 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= ((int) ($pagination['page'] ?? 1)) <= 1 ? 'pointer-events-none opacity-40' : '' ?>">Previous</a>
-            <a href="<?= htmlspecialchars($buildPageUrl(((int) ($pagination['page'] ?? 1)) + 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= ((int) ($pagination['page'] ?? 1)) >= ((int) ($pagination['total_pages'] ?? 1)) ? 'pointer-events-none opacity-40' : '' ?>">Next</a>
+            <?php if ($paginationNoSearch): ?>
+                <?php
+                    // Keyset navigation. "First" resets to the head view;
+                    // Previous/Next use the cursors returned by the DB layer.
+                    $isHead = $currentCursor === '';
+                    $prevDisabled = $prevCursor === null || $prevCursor === '';
+                    $nextDisabled = $nextCursor === null || $nextCursor === '';
+                ?>
+                <a href="<?= htmlspecialchars($buildCursorUrl(null, 'next'), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $isHead ? 'pointer-events-none opacity-40' : '' ?>">First</a>
+                <a href="<?= htmlspecialchars($buildCursorUrl($prevCursor, 'prev'), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $prevDisabled ? 'pointer-events-none opacity-40' : '' ?>">Previous</a>
+                <a href="<?= htmlspecialchars($buildCursorUrl($nextCursor, 'next'), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $nextDisabled ? 'pointer-events-none opacity-40' : '' ?>">Next</a>
+            <?php else: ?>
+                <a href="<?= htmlspecialchars($buildPageUrl($pageNum - 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= $pageNum <= 1 ? 'pointer-events-none opacity-40' : '' ?>">Previous</a>
+                <a href="<?= htmlspecialchars($buildPageUrl($pageNum + 1), ENT_QUOTES) ?>" class="btn-secondary px-3 py-1.5 <?= ($totalPagesValue !== null && $pageNum >= (int) $totalPagesValue) ? 'pointer-events-none opacity-40' : '' ?>">Next</a>
+            <?php endif; ?>
         </div>
     </div>
 </section>
@@ -640,6 +711,100 @@ if (function_exists('ob_flush')) { @ob_flush(); }
         } else {
             loadCoverage(false);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Deferred loss-count loader
+    //
+    // The overview page now skips the 1.5M-row COUNT(*) on the initial render
+    // and fetches it here instead. The label starts as "Showing N-M recorded
+    // losses · total counting…" and is rewritten once the fetch returns.
+    // -----------------------------------------------------------------------
+    const lossCountLabel = document.querySelector('[data-loss-count-label]');
+    const paginationTotalValueEl = document.querySelector('[data-loss-pagination-total-value]');
+
+    function formatCountNumber(n) {
+        const v = typeof n === 'number' ? n : parseInt(n, 10);
+        return Number.isFinite(v) ? v.toLocaleString() : '—';
+    }
+
+    function applyTotalToLabel(total, pageSize) {
+        if (!lossCountLabel) return;
+        // Re-derive the "Showing N-M" from the rendered row count so we don't
+        // rely on any intermediate text parsing.
+        const tableRows = document.querySelectorAll('[data-ui-section="killmail-overview-table"] tbody tr');
+        const rowCount = tableRows.length === 1 && tableRows[0].querySelector('[colspan]') ? 0 : tableRows.length;
+        // Only rewrite the "counting…" path — if the label already carries a
+        // concrete total (search path) leave it alone.
+        const suffix = lossCountLabel.querySelector('[data-loss-count-suffix]');
+        if (!suffix) return;
+        const totalFormatted = formatCountNumber(total);
+        lossCountLabel.textContent = 'Showing ' + (rowCount > 0 ? '1-' + rowCount : '0') + ' of ' + totalFormatted + ' recorded losses';
+    }
+
+    function applyTotalToPagination(total, pageSize) {
+        if (!paginationTotalValueEl) return;
+        const size = Math.max(1, parseInt(pageSize, 10) || 25);
+        const pages = Math.max(1, Math.ceil(total / size));
+        paginationTotalValueEl.textContent = pages.toLocaleString() + ' pages (' + formatCountNumber(total) + ' losses)';
+    }
+
+    async function loadLossCount() {
+        if (!lossCountLabel && !paginationTotalValueEl) return;
+        // Only the default list defers the count; search preserves the
+        // server-rendered total.
+        const urlParams = new URLSearchParams(window.location.search);
+        if ((urlParams.get('q') || '').trim() !== '') return;
+
+        const countParams = new URLSearchParams();
+        ['alliance_id', 'corporation_id', 'mail_type', 'tracked_only'].forEach(name => {
+            const v = urlParams.get(name);
+            if (v !== null && v !== '') countParams.set(name, v);
+        });
+        const pageSize = urlParams.get('page_size') || '25';
+
+        try {
+            const response = await fetch('/api/killmail-intelligence/count.php?' + countParams.toString(), {
+                headers: { 'Accept': 'application/json' },
+            });
+            const data = await response.json().catch(() => null);
+            if (!response.ok || !data || !data.ok) {
+                const suffix = lossCountLabel && lossCountLabel.querySelector('[data-loss-count-suffix]');
+                if (suffix) suffix.textContent = '· total unavailable';
+                if (paginationTotalValueEl) paginationTotalValueEl.textContent = 'unavailable';
+                return;
+            }
+            applyTotalToLabel(data.total, pageSize);
+            applyTotalToPagination(data.total, pageSize);
+        } catch (err) {
+            const suffix = lossCountLabel && lossCountLabel.querySelector('[data-loss-count-suffix]');
+            if (suffix) suffix.textContent = '· total unavailable';
+            if (paginationTotalValueEl) paginationTotalValueEl.textContent = 'unavailable';
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadLossCount);
+    } else {
+        loadLossCount();
+    }
+
+    // -----------------------------------------------------------------------
+    // Search-submit spinner
+    //
+    // Surfacing a visible "Searching…" status lets the user see that the
+    // request is in flight on slow search queries (multi-join + LIKE path).
+    // -----------------------------------------------------------------------
+    const overviewForm = document.querySelector('[data-ui-section="killmail-overview-table"] form');
+    const searchSubmitSpinner = document.querySelector('[data-search-submit-spinner]');
+    const searchSubmitBtn = document.querySelector('[data-search-submit-btn]');
+    if (overviewForm && searchSubmitSpinner && searchSubmitBtn) {
+        overviewForm.addEventListener('submit', () => {
+            searchSubmitSpinner.classList.remove('hidden');
+            searchSubmitSpinner.classList.add('inline-flex');
+            searchSubmitBtn.setAttribute('disabled', 'disabled');
+            searchSubmitBtn.classList.add('opacity-60', 'pointer-events-none');
+        });
     }
 })();
 </script>

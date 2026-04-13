@@ -11875,7 +11875,15 @@ function killmail_overview_data(): array
         'mail_type' => in_array($_GET['mail_type'] ?? 'loss', ['kill', 'loss', ''], true) ? ($_GET['mail_type'] ?? 'loss') : 'loss',
         'page' => max(1, (int) ($_GET['page'] ?? 1)),
         'page_size' => $pageSize,
+        'cursor' => trim((string) ($_GET['cursor'] ?? '')),
+        'direction' => ($_GET['dir'] ?? 'next') === 'prev' ? 'prev' : 'next',
     ];
+    // Fast path for the default list (no free-text search): use keyset
+    // pagination driven by (effective_killmail_at, sequence_id) and skip the
+    // COUNT(*) on initial render. The total gets filled in asynchronously via
+    // /api/killmail-intelligence/count.php so the 1.5M-row COUNT no longer
+    // blocks the page.
+    $filters['skip_count'] = $filters['search'] === '';
     // Cache all views that don't have a free-text search query. Free-text search has
     // too many possible combinations to cache usefully; everything else (pagination,
     // alliance/corp/type filters) is keyed explicitly so each combination gets its
@@ -11926,6 +11934,10 @@ function killmail_overview_data(): array
                     'total_items' => 0,
                     'showing_from' => 0,
                     'showing_to' => 0,
+                    'use_keyset' => false,
+                    'direction' => 'next',
+                    'next_cursor' => null,
+                    'prev_cursor' => null,
                 ],
                 'coverage' => [
                     'start_date' => $overviewStartDate,
@@ -12314,16 +12326,26 @@ function killmail_overview_data(): array
                 'page' => (int) ($listing['page'] ?? 1),
                 'page_size' => (int) ($listing['page_size'] ?? $pageSize),
                 'page_size_options' => $allowedPageSizes,
-                'total_pages' => (int) ($listing['total_pages'] ?? 1),
-                'total_items' => (int) ($listing['total_items'] ?? 0),
+                // total_pages / total_items are null on the keyset fast path —
+                // the UI should render them as "counting…" until the async
+                // count endpoint returns.
+                'total_pages' => $listing['total_pages'] ?? null,
+                'total_items' => $listing['total_items'] ?? null,
                 'showing_from' => (int) ($listing['showing_from'] ?? 0),
                 'showing_to' => (int) ($listing['showing_to'] ?? 0),
+                'use_keyset' => (bool) ($listing['use_keyset'] ?? false),
+                'direction' => (string) ($listing['direction'] ?? 'next'),
+                'next_cursor' => isset($listing['next_cursor']) ? (string) $listing['next_cursor'] : null,
+                'prev_cursor' => isset($listing['prev_cursor']) ? (string) $listing['prev_cursor'] : null,
             ],
             'empty_message' => $emptyMessage,
         ];
     };
 
     if ($useCache) {
+        // Keyset cursor + direction are part of the cache key so Next/Previous
+        // navigation each get their own entry. When there's no cursor we fall
+        // back to the old page-number key for the default (head) view.
         $cacheKey = [
             'page', $filters['page'],
             'size', $filters['page_size'],
@@ -12331,6 +12353,8 @@ function killmail_overview_data(): array
             'alliance', $filters['alliance_id'],
             'corp', $filters['corporation_id'],
             'tracked', (int) $filters['tracked_only'],
+            'cursor', $filters['cursor'],
+            'dir', $filters['direction'],
         ];
         return supplycore_cache_aside('killmail_overview', $cacheKey, supplycore_cache_ttl('killmail_summary'), $resolver, [
             'dependencies' => ['killmail_overview'],
@@ -26225,6 +26249,309 @@ function log_viewer_scheduler_report_cycles(string $path, int $maxCycles = 50): 
     });
 
     return array_slice($cycles, 0, $maxCycles);
+}
+
+/**
+ * Resolve a user-supplied log filename to an absolute path inside storage/logs.
+ *
+ * Returns null if the filename is empty, contains path separators, escapes the
+ * log directory, or doesn't point at a regular readable file.  Used by the
+ * per-file log viewer to guard against traversal attempts.
+ */
+function log_viewer_resolve_log_path(string $filename): ?string
+{
+    $filename = trim($filename);
+    if ($filename === '' || $filename === '.' || $filename === '..') {
+        return null;
+    }
+    // Reject any attempt at traversal or absolute paths.
+    if (strpbrk($filename, "/\\\0") !== false) {
+        return null;
+    }
+
+    $logDir = realpath(__DIR__ . '/../storage/logs');
+    if ($logDir === false || !is_dir($logDir)) {
+        return null;
+    }
+
+    $fullPath = realpath($logDir . '/' . $filename);
+    if ($fullPath === false) {
+        return null;
+    }
+    // Ensure the resolved path is still inside the log directory.
+    if (strncmp($fullPath, $logDir . DIRECTORY_SEPARATOR, strlen($logDir) + 1) !== 0) {
+        return null;
+    }
+    if (!is_file($fullPath) || !is_readable($fullPath)) {
+        return null;
+    }
+    return $fullPath;
+}
+
+/**
+ * Read the tail of a log file and return parsed entries suitable for display.
+ *
+ * Lane-*.log and scheduler-report.jsonl files are emitted as one JSON object
+ * per line by the Python loop runner's ``JsonFormatter``; other logs (cron.log,
+ * worker.log, legacy compute.log) are free-form text.  This helper tries to
+ * decode each line as JSON; if decoding fails the raw text is preserved, so
+ * the same renderer can handle both.
+ *
+ * The read is a reverse tail: we seek to the end of the file and walk
+ * backwards in chunks until we have ``$maxLines`` (or reach the start).  That
+ * keeps memory bounded for multi-gigabyte logs.
+ *
+ * Options:
+ *   - ``max_lines`` (int, default 500): how many raw lines to read.
+ *   - ``level``    (string, default ''): filter JSON entries whose ``level``
+ *                   is below this minimum (debug/info/warning/error).
+ *   - ``q``        (string, default ''): case-insensitive substring filter
+ *                   applied to the raw line before parsing.
+ */
+function log_viewer_file_detail(string $filename, array $opts = []): array
+{
+    $path = log_viewer_resolve_log_path($filename);
+    if ($path === null) {
+        return [
+            'error' => 'Log file not found or not readable.',
+            'filename' => $filename,
+        ];
+    }
+
+    $maxLines = max(1, min(5000, (int) ($opts['max_lines'] ?? 500)));
+    $minLevel = strtolower(trim((string) ($opts['level'] ?? '')));
+    $query = trim((string) ($opts['q'] ?? ''));
+    $queryLower = $query !== '' ? strtolower($query) : '';
+
+    $levelOrder = [
+        'debug'    => 0,
+        'info'     => 1,
+        'notice'   => 1,
+        'warning'  => 2,
+        'warn'     => 2,
+        'error'    => 3,
+        'critical' => 4,
+    ];
+    $minLevelRank = $minLevel !== '' && isset($levelOrder[$minLevel]) ? $levelOrder[$minLevel] : null;
+
+    $sizeBytes = @filesize($path);
+    $modifiedAt = @filemtime($path);
+
+    // Reverse-tail read: walk backwards in 32 KiB chunks and split on newlines.
+    $fp = @fopen($path, 'rb');
+    if ($fp === false) {
+        return [
+            'error' => 'Unable to open log file.',
+            'filename' => basename($path),
+        ];
+    }
+
+    // Oversample a bit so that filtering by level/query can still return
+    // roughly $maxLines results without an extra read pass.
+    $needLines = $queryLower !== '' || $minLevelRank !== null
+        ? $maxLines * 4
+        : $maxLines + 32;
+
+    $chunkSize = 32768;
+    $buffer = '';
+    $rawLines = [];
+
+    fseek($fp, 0, SEEK_END);
+    $position = ftell($fp);
+    if ($position === false) {
+        fclose($fp);
+        return [
+            'error' => 'Unable to read log file position.',
+            'filename' => basename($path),
+        ];
+    }
+    $fileSize = $position;
+
+    while ($position > 0 && count($rawLines) < $needLines) {
+        $read = (int) min($chunkSize, $position);
+        $position -= $read;
+        fseek($fp, $position, SEEK_SET);
+        $chunk = (string) fread($fp, $read);
+        $buffer = $chunk . $buffer;
+
+        $parts = explode("\n", $buffer);
+        $buffer = array_shift($parts) ?? '';
+        foreach (array_reverse($parts) as $part) {
+            $part = rtrim($part, "\r");
+            if ($part === '') {
+                continue;
+            }
+            $rawLines[] = $part;
+            if (count($rawLines) >= $needLines) {
+                break;
+            }
+        }
+    }
+
+    if ($position === 0 && $buffer !== '' && count($rawLines) < $needLines) {
+        $first = rtrim($buffer, "\r");
+        if ($first !== '') {
+            $rawLines[] = $first;
+        }
+    }
+    fclose($fp);
+
+    // ``$rawLines`` is newest-first.  Parse/filter.
+    $entries = [];
+    $levelCounts = ['error' => 0, 'warning' => 0, 'info' => 0, 'debug' => 0, 'other' => 0];
+    $jsonParsed = 0;
+    $jsonFailed = 0;
+    $totalScanned = 0;
+
+    foreach ($rawLines as $line) {
+        $totalScanned++;
+        if ($queryLower !== '' && stripos($line, $query) === false) {
+            continue;
+        }
+
+        $entry = [
+            'raw' => $line,
+            'is_json' => false,
+            'ts' => null,
+            'ts_display' => null,
+            'level' => 'other',
+            'level_rank' => 0,
+            'logger' => null,
+            'message' => $line,
+            'event' => null,
+            'job_key' => null,
+            'payload' => null,
+            'exception' => null,
+        ];
+
+        // Try JSON-first so structured log files render cleanly, falling
+        // through to raw text for legacy plain-text logs.
+        $firstChar = $line[0] ?? '';
+        if ($firstChar === '{' || $firstChar === '[') {
+            $decoded = json_decode($line, true);
+            if (is_array($decoded)) {
+                $entry['is_json'] = true;
+                $jsonParsed++;
+                $entry['ts'] = isset($decoded['ts']) ? (string) $decoded['ts'] : null;
+                $entry['ts_display'] = $entry['ts'] !== null
+                    ? log_viewer_format_iso_timestamp($entry['ts'])
+                    : null;
+                $entry['logger'] = isset($decoded['logger']) ? (string) $decoded['logger'] : null;
+                $entry['message'] = isset($decoded['message']) ? (string) $decoded['message'] : $line;
+                $rawLevel = strtolower((string) ($decoded['level'] ?? 'info'));
+                $entry['level'] = $rawLevel;
+                $entry['level_rank'] = $levelOrder[$rawLevel] ?? 1;
+                if (isset($decoded['exception'])) {
+                    $entry['exception'] = (string) $decoded['exception'];
+                }
+                // Everything else is treated as payload metadata; surface
+                // the two most common fields (event / job_key) for quick
+                // scanning and leave the rest in the expandable payload.
+                $payload = $decoded;
+                unset($payload['ts'], $payload['level'], $payload['logger'], $payload['message'], $payload['exception']);
+                if (isset($payload['event'])) {
+                    $entry['event'] = (string) $payload['event'];
+                }
+                if (isset($payload['job_key'])) {
+                    $entry['job_key'] = (string) $payload['job_key'];
+                }
+                $entry['payload'] = $payload !== [] ? $payload : null;
+            } else {
+                $jsonFailed++;
+            }
+        }
+
+        if ($minLevelRank !== null && $entry['level_rank'] < $minLevelRank) {
+            continue;
+        }
+
+        $bucket = match ($entry['level']) {
+            'error', 'critical' => 'error',
+            'warning', 'warn'   => 'warning',
+            'info', 'notice'    => 'info',
+            'debug'             => 'debug',
+            default             => 'other',
+        };
+        $levelCounts[$bucket]++;
+
+        $entries[] = $entry;
+        if (count($entries) >= $maxLines) {
+            break;
+        }
+    }
+
+    return [
+        'error' => null,
+        'filename' => basename($path),
+        'path' => $path,
+        'size_bytes' => $sizeBytes !== false ? (int) $sizeBytes : 0,
+        'size_human' => $sizeBytes !== false ? log_viewer_format_bytes((int) $sizeBytes) : '0 B',
+        'modified_at' => $modifiedAt !== false ? gmdate('Y-m-d H:i:s', $modifiedAt) : null,
+        'modified_relative' => $modifiedAt !== false ? human_duration_ago(max(0, time() - $modifiedAt)) . ' ago' : 'Unknown',
+        'is_jsonl' => $jsonParsed > 0 && $jsonFailed === 0,
+        'lines_returned' => count($entries),
+        'lines_scanned' => $totalScanned,
+        'entries' => $entries,
+        'level_counts' => $levelCounts,
+        'max_lines' => $maxLines,
+        'truncated' => $fileSize > 0 && $position > 0,
+        'file_size_bytes' => $fileSize,
+    ];
+}
+
+/**
+ * Format an ISO-8601 timestamp into a compact "HH:MM:SS (Y-m-d)" string for
+ * the log viewer.  Returns the input unchanged if it cannot be parsed.
+ */
+function log_viewer_format_iso_timestamp(string $iso): string
+{
+    if ($iso === '') {
+        return '';
+    }
+    $ts = strtotime($iso);
+    if ($ts === false) {
+        return $iso;
+    }
+    return gmdate('H:i:s', $ts) . ' UTC · ' . gmdate('Y-m-d', $ts);
+}
+
+/**
+ * List log files suitable for the "Log Files" picker in the viewer.  Returns
+ * an array of [filename, size_bytes, size_human, modified_at, modified_relative,
+ * is_jsonl] sorted by most-recently-modified first (so the file the operator
+ * is most likely to care about comes first).
+ */
+function log_viewer_available_files(): array
+{
+    $logDir = realpath(__DIR__ . '/../storage/logs');
+    if ($logDir === false || !is_dir($logDir)) {
+        return [];
+    }
+    $files = [];
+    foreach (scandir($logDir) as $entry) {
+        if ($entry === '.' || $entry === '..' || $entry === '.gitkeep') {
+            continue;
+        }
+        $fullPath = $logDir . '/' . $entry;
+        if (!is_file($fullPath)) {
+            continue;
+        }
+        $sizeBytes = @filesize($fullPath);
+        $modifiedAt = @filemtime($fullPath);
+        $files[] = [
+            'filename' => $entry,
+            'size_bytes' => $sizeBytes !== false ? (int) $sizeBytes : 0,
+            'size_human' => $sizeBytes !== false ? log_viewer_format_bytes((int) $sizeBytes) : '0 B',
+            'modified_at' => $modifiedAt !== false ? gmdate('Y-m-d H:i:s', $modifiedAt) : null,
+            'modified_relative' => $modifiedAt !== false ? human_duration_ago(max(0, time() - $modifiedAt)) . ' ago' : 'Unknown',
+            'modified_ts' => $modifiedAt !== false ? (int) $modifiedAt : 0,
+            'is_jsonl' => str_ends_with($entry, '.jsonl')
+                || str_starts_with($entry, 'lane-')
+                || $entry === 'worker.log',
+        ];
+    }
+    usort($files, fn (array $a, array $b) => ($b['modified_ts'] ?? 0) <=> ($a['modified_ts'] ?? 0));
+    return $files;
 }
 
 function log_viewer_external_health(): array

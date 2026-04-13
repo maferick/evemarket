@@ -15,6 +15,19 @@ from ..db import SupplyCoreDb
 
 logger = logging.getLogger(__name__)
 
+
+def _as_utc_aware(dt: Any) -> Any:
+    """Normalize a datetime to UTC-aware.
+
+    MariaDB returns TIMESTAMP columns as naive datetimes in UTC, while
+    log-file and journal sources emit tz-aware datetimes.  Comparing the two
+    raises TypeError — so callers must normalize before comparing/sorting.
+    """
+    if isinstance(dt, datetime) and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 # Log files to scan for errors.  Keys are human-readable source names,
 # values are paths relative to app_root.
 _LOG_FILE_PATHS: dict[str, str] = {
@@ -210,8 +223,8 @@ def _collect_sync_run_failures(
             "id": r["id"],
             "job_name": str(r["dataset_key"]),
             "error_text": str(r.get("error_message") or "unknown error"),
-            "started_at": r["started_at"],
-            "finished_at": r.get("finished_at"),
+            "started_at": _as_utc_aware(r["started_at"]),
+            "finished_at": _as_utc_aware(r.get("finished_at")),
             "duration_ms": duration_ms,
             "meta_json": None,
             "_source": "sync_runs",
@@ -426,6 +439,8 @@ def run_log_to_issues(
     )
     for r in job_run_failures:
         r["_source"] = "job_runs"
+        r["started_at"] = _as_utc_aware(r.get("started_at"))
+        r["finished_at"] = _as_utc_aware(r.get("finished_at"))
 
     # 1b. sync_runs
     sync_run_failures = _collect_sync_run_failures(db, lookback_hours)
@@ -488,7 +503,7 @@ def run_log_to_issues(
 
         if existing:
             # Only count occurrences newer than last scan to avoid double-counting.
-            prev_last_seen = existing.get("last_seen_at")
+            prev_last_seen = _as_utc_aware(existing.get("last_seen_at"))
             if prev_last_seen:
                 occurrences = [r for r in occurrences if r["started_at"] > prev_last_seen]
             if not occurrences:
