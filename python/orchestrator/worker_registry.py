@@ -93,7 +93,11 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
 
     # ── Market intelligence ───────────────────────────────────────────────
     # Auto doctrine detector + its chained buy-all; signals depends on fresh market data.
-    "compute_auto_doctrines":                   {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 30,  "runtime_class": "market_heavy", "resource_cost": "high",   "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 7200, "memory_limit_mb": 2048, "retry_delay_seconds": 60, "max_attempts": 3, "lane": "compute-misc"},
+    # 30-day rolling window over killmail_events + items → full re-cluster.
+    # Baseline profiling ~85 min real time; 60 min cooldown keeps it from
+    # re-queueing before the previous run lands (compute-misc lane floor
+    # would give us 15 min otherwise, which is way too tight).
+    "compute_auto_doctrines":                   {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 3600,"runtime_class": "market_heavy", "resource_cost": "high",   "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 7200, "memory_limit_mb": 2048, "retry_delay_seconds": 60, "max_attempts": 3, "lane": "compute-misc"},
     "compute_auto_buyall":                      {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "high",   "freshness_sensitivity": "immediate",  "cooldown_seconds": 10,  "runtime_class": "market_heavy", "resource_cost": "medium", "concurrency_group": "",               "depends_on": ["market_hub_current_sync", "alliance_current_sync", "compute_auto_doctrines"], "opportunistic_background": False, "timeout_seconds": 420,  "memory_limit_mb": 768,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "realtime"},
     # NOTE: compute_auto_doctrines moved to compute-misc (85min baseline) — cross-lane dep from buyall is best-effort.
     "compute_signals":                          {"workload_class": "compute", "execution_mode": "python", "queue_name": "compute", "priority": "high",   "freshness_sensitivity": "immediate",  "cooldown_seconds": 10,  "runtime_class": "market_heavy", "resource_cost": "medium", "concurrency_group": "",               "depends_on": ["market_hub_current_sync"],                                                 "opportunistic_background": False, "timeout_seconds": 300,  "memory_limit_mb": 768,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "realtime", "empty_output_is_suspicious": True},
@@ -114,8 +118,11 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
     "alliance_historical_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "market_backfill","depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 3600, "memory_limit_mb": 768,  "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute-misc"},
 
     # ── Analytics (independent of each other, no upstream deps) ───────────
-    "analytics_bucket_1h_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "immediate",  "cooldown_seconds": 10,  "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 300,  "memory_limit_mb": 768,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "compute-misc"},
-    "analytics_bucket_1d_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 30,  "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 600,  "memory_limit_mb": 1024, "retry_delay_seconds": 30, "max_attempts": 4, "lane": "compute-misc"},
+    # Hourly rollup — no need to churn sub-hour; 15 min cooldown matches the
+    # compute-misc lane floor and lets the hour boundary be caught promptly.
+    "analytics_bucket_1h_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "immediate",  "cooldown_seconds": 900, "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 300,  "memory_limit_mb": 768,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "compute-misc"},
+    # Daily rollup — hourly cadence is already oversampled; cut the churn.
+    "analytics_bucket_1d_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 3600,"runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 600,  "memory_limit_mb": 1024, "retry_delay_seconds": 30, "max_attempts": 4, "lane": "compute-misc"},
 
     # ── Summaries & intelligence ──────────────────────────────────────────
     # Summaries can run in parallel — they read from different source tables
@@ -123,10 +130,18 @@ WORKER_JOB_DEFINITIONS: dict[str, dict[str, Any]] = {
     "dashboard_summary_sync":                   {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "immediate",  "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "low",    "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 180,  "memory_limit_mb": 384,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "realtime"},
     "loss_demand_summary_sync":                 {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "immediate",  "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "low",    "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": False, "timeout_seconds": 180,  "memory_limit_mb": 384,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "realtime"},
     "deal_alerts_sync":                         {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "high",   "freshness_sensitivity": "immediate",  "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "low",    "concurrency_group": "",               "depends_on": ["market_hub_current_sync"],                                                 "opportunistic_background": False, "timeout_seconds": 90,   "memory_limit_mb": 384,  "retry_delay_seconds": 15, "max_attempts": 4, "lane": "realtime"},
-    "rebuild_ai_briefings":                     {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 30,  "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4, "lane": "compute-misc"},
-    "forecasting_ai_sync":                      {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4, "lane": "compute-misc"},
+    # Retired in 20260416_retire_straggler_legacy_jobs — kept in the registry
+    # so bootstrap doesn't re-seed it, but push the cooldown out so any stale
+    # sync_schedules row on an upgraded host does not churn the lane.
+    "rebuild_ai_briefings":                     {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 3600,"runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4, "lane": "compute-misc"},
+    "forecasting_ai_sync":                      {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 1800,"runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 300,  "memory_limit_mb": 512,  "retry_delay_seconds": 60, "max_attempts": 4, "lane": "compute-misc"},
     "market_comparison_summary_sync":           {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "high",   "freshness_sensitivity": "immediate",  "cooldown_seconds": 5,   "runtime_class": "sync_light",   "resource_cost": "medium", "concurrency_group": "",               "depends_on": ["market_hub_current_sync", "alliance_current_sync"],                        "opportunistic_background": False, "timeout_seconds": 180,  "memory_limit_mb": 512,  "retry_delay_seconds": 30, "max_attempts": 4, "lane": "realtime"},
-    "market_hub_local_history_sync":            {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 60,  "runtime_class": "market_heavy", "resource_cost": "high",   "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 1800, "memory_limit_mb": 16384, "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute-misc"},
+    # 9.4M-row snapshot rebuild across all market hubs × 30 days. In-progress
+    # runs have been observed at 16 h end-to-end during bootstrap because the
+    # per-hub scans dominate; steady state is shorter but still hours-scale.
+    # 60 min cooldown keeps us from re-queueing while a run is still landing
+    # and leaves room for the sync-lane scheduler to interleave other work.
+    "market_hub_local_history_sync":            {"workload_class": "sync",    "execution_mode": "python", "queue_name": "sync",    "priority": "normal", "freshness_sensitivity": "background", "cooldown_seconds": 3600,"runtime_class": "market_heavy", "resource_cost": "high",   "concurrency_group": "",               "depends_on": [],                                                                          "opportunistic_background": True,  "timeout_seconds": 1800, "memory_limit_mb": 16384, "retry_delay_seconds": 120, "max_attempts": 3, "lane": "compute-misc"},
 
     # ── Intelligence pipeline ─────────────────────────────────────────────
     # Managed by esi-continuous daemon — not scheduled via lane runner.
@@ -246,6 +261,22 @@ RETIRED_PHP_SYNC_PATHS: dict[str, str] = {
 
 
 def _minimum_cooldown_seconds(job_key: str, definition: dict[str, Any]) -> int:
+    """Floor cooldowns to match observed per-lane cycle times.
+
+    Cycle times come from baseline profiling + operator dashboards:
+      * compute-graph    ~27 min full cycle (all tier-0/1/2 jobs serialized)
+      * compute-battle   15–47 min (theater jobs are the long pole)
+      * compute-behavioral 45–60 min (character feature windows dominate)
+      * compute-cip       ~10–15 min when upstream is warm
+      * compute-spy       ~200 min (identity resolution + ring projection)
+      * compute-misc      widely variable; mixed sync/analytics/alliance
+      * maintenance       hourly cleanup/audit is plenty
+
+    Jobs that wanted a tighter cadence than the lane can actually deliver were
+    showing up as perpetually "Overdue" in the scheduler dashboard. Raising the
+    floors aligns scheduler expectations with reality so the overdue backlog
+    reflects genuine slippage, not impossible targets.
+    """
     lane = str(definition.get("lane") or "").strip().lower()
     workload = str(definition.get("workload_class") or "").strip().lower()
     runtime = str(definition.get("runtime_class") or "").strip().lower()
@@ -255,11 +286,15 @@ def _minimum_cooldown_seconds(job_key: str, definition: dict[str, Any]) -> int:
     if "historical" in key or "backfill" in key or "alliance_member" in key:
         return 3600
     if lane == "maintenance":
+        return 3600
+    if lane == "compute-spy":
         return 1800
+    if lane == "compute-misc":
+        return 900
     if lane in {"compute-cip", "compute-behavioral"}:
-        return 600
+        return 1800
     if lane in {"compute-graph", "compute-battle"} or runtime in {"graph_heavy", "battle_heavy"}:
-        return 300
+        return 900
     if lane in {"realtime", "ingestion"} or workload == "sync":
         return 60
     return 60
