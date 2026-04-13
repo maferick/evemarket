@@ -16,15 +16,12 @@ TARGET_JOB_KEYS = [
     "current_state_refresh_sync",
     "analytics_bucket_1h_sync",
     "analytics_bucket_1d_sync",
-    "activity_priority_summary_sync",
     "dashboard_summary_sync",
     "loss_demand_summary_sync",
     "doctrine_intelligence_sync",
     "deal_alerts_sync",
-    "rebuild_ai_briefings",
     "forecasting_ai_sync",
     "compute_buy_all",
-    "compute_signals",
 ]
 
 

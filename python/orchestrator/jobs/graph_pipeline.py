@@ -19,7 +19,6 @@ from ..neo4j import Neo4jClient, Neo4jConfig, Neo4jError
 logger = logging.getLogger(__name__)
 
 GRAPH_BATCH_STATE_KEYS = {
-    "doctrine_cursor": "graph_sync_doctrine_dependency_cursor",
     "battle_cursor": "graph_sync_battle_intelligence_cursor",
     "derived_character_cursor": "graph_derived_relationships_character_cursor",
     "derived_fit_cursor": "graph_derived_relationships_fit_cursor",
@@ -254,21 +253,6 @@ def _snapshot_graph_health(client: Neo4jClient) -> dict[str, Any]:
         "degree": (degrees[0] if degrees else {}),
         "fit_degree": (fit_degrees[0] if fit_degrees else {}),
     }
-
-
-def run_compute_graph_sync_doctrine_dependency(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Retired — legacy doctrine_fits / doctrine_fit_items / doctrine_groups tables
-    no longer exist. The auto doctrine pipeline does not yet project into Neo4j,
-    so this job is a no-op and should be removed from the scheduler once all
-    downstream graph consumers migrate off the Doctrine/Fit/Item node labels."""
-    started = time.perf_counter()
-    return _job_payload(
-        "compute_graph_sync_doctrine_dependency",
-        started,
-        "skipped",
-        error_text="retired: legacy doctrine tables dropped",
-    )
-
 
 
 def run_compute_graph_sync_battle_intelligence(db: SupplyCoreDb, neo4j_raw: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -11,7 +11,6 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | compute_battle_rollups | real_schedulable | yes | yes | yes | yes | yes | yes |  |  |
 | compute_battle_target_metrics | real_schedulable | yes | yes | yes | yes | yes | yes |  |  |
 | compute_suspicion_scores | real_schedulable | yes | yes | yes | yes | yes | yes |  |  |
-| compute_graph_sync_doctrine_dependency | real_schedulable | yes | no | yes | yes | yes | yes | compute_graph_sync | Triggered by parent. |
 | compute_graph_sync_battle_intelligence | real_schedulable | yes | no | yes | yes | yes | yes | compute_graph_sync | Triggered by parent. |
 | compute_graph_derived_relationships | real_schedulable | yes | no | yes | yes | yes | yes | compute_graph_sync | Triggered by parent. |
 | compute_graph_prune | real_schedulable | yes | no | yes | yes | yes | yes | compute_graph_sync | Triggered by parent. |
@@ -28,14 +27,11 @@ Source of truth: `supplycore_authoritative_job_registry()` in `src/functions.php
 | market_comparison_summary_sync | real_disabled_review | yes | yes | no | yes | no | yes |  | Bridge-coupled; not worker-safe yet. |
 | loss_demand_summary_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | dashboard_summary_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
-| rebuild_ai_briefings | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | forecasting_ai_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
-| activity_priority_summary_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | analytics_bucket_1h_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | analytics_bucket_1d_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | deal_alerts_sync | real_disabled_review | yes | yes | no | no | no | yes |  | Python-native processor not implemented yet. |
 | compute_buy_all | real_disabled_review | yes | yes | no | yes | no | yes |  | Exists but disabled until validated worker-safe. |
-| compute_signals | real_disabled_review | yes | yes | no | yes | no | yes |  | Exists but disabled until validated worker-safe. |
 | compute_cohort_baselines | real_schedulable | yes | yes | yes | yes | yes | yes |  | Normalizes suspicion scores against cohort baselines. |
 | compute_copresence_edges | real_schedulable | yes | yes | yes | yes | yes | yes |  | Generalized co-presence edges from battle participation. |
 | graph_data_quality_check | real_schedulable | yes | yes | yes | yes | yes | yes |  | Validates Neo4j graph integrity. |

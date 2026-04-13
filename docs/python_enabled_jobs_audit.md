@@ -11,7 +11,6 @@ This matrix records the worker binding status for the currently-enabled Python c
 | compute_battle_rollups | 1 | `run_compute_processor()` dispatch | `run_compute_battle_rollups()` | yes | yes | yes | no | no (registry consolidated) | yes |
 | compute_battle_target_metrics | 1 | `run_compute_processor()` dispatch | `run_compute_battle_target_metrics()` | yes | yes | yes | no | no (registry consolidated) | yes |
 | compute_suspicion_scores | 1 | `run_compute_processor()` dispatch | `run_compute_suspicion_scores()` | yes | yes | yes | no | no (registry consolidated) | yes |
-| compute_graph_sync_doctrine_dependency | 1 | `run_compute_processor()` dispatch | `run_compute_graph_sync_doctrine_dependency()` | yes | yes | yes | no | no (registry consolidated) | yes |
 | compute_graph_sync_battle_intelligence | 1 | `run_compute_processor()` dispatch | `run_compute_graph_sync_battle_intelligence()` | yes | yes | yes | no | no (registry consolidated) | yes |
 | compute_graph_derived_relationships | 1 | `run_compute_processor()` dispatch | `run_compute_graph_derived_relationships()` | yes | yes | yes | no | no (registry consolidated) | yes |
 | compute_graph_prune | 1 | `run_compute_processor()` dispatch | `run_compute_graph_prune()` | yes | yes | yes | no | no (registry consolidated) | yes |

@@ -177,8 +177,7 @@ After import, runtime settings are read from `app_settings`; `local.php` is not 
 ## AI Briefings
 
 - SupplyCore’s AI briefing layer is intentionally **non-authoritative**. Doctrine calculations, market comparisons, killmail/loss signals, and readiness math remain deterministic and authoritative.
-- The configured provider is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; it runs in the background through the scheduler job `rebuild_ai_briefings`.
-- The scheduler now self-registers missing schedule rows, so `rebuild_ai_briefings` starts running automatically on fresh installs and after upgrades without requiring a manual save in Settings.
+- The configured provider is used only to summarize compact precomputed doctrine facts into operator briefings. It does **not** run on page load; doctrine briefing regeneration has been retired and any stale briefings are displayed read-only.
 - Scheduler cadence is runtime-aware: `sync_schedules.effective_interval_seconds` is automatically recalculated from observed run duration and used for `next_due_at` advancement to avoid overlap churn on slow runs.
 - Every loop cycle emits a consolidated JSON line at `storage/logs/scheduler-report.jsonl` for lane-level run visibility.
 - Configure AI briefing connectivity in **Settings → AI Briefings** (`/settings?section=ai-briefings`):
@@ -237,13 +236,11 @@ After import, runtime settings are read from `app_settings`; `local.php` is not 
 
 ## Precomputed Intelligence Pipeline (MariaDB + InfluxDB + Python)
 
-- PHP request handlers now expect precomputed planner/signal datasets in MariaDB (`buy_all_summary`, `buy_all_items`, `signals`, `doctrine_readiness`) and avoid runtime-heavy planner computation.
+- PHP request handlers now expect precomputed planner datasets in MariaDB (`buy_all_summary`, `buy_all_items`, `doctrine_readiness`) and avoid runtime-heavy planner computation.
 - Cron/systemd should run:
   - `bin/python_compute_buy_all.py` to materialize Buy All planner payloads into MariaDB.
-  - `bin/python_compute_signals.py` to generate undervalue/shortage/blocker/spike signals from MariaDB state plus optional InfluxDB trends.
 - Recommended cadence:
   - `compute_buy_all`: every 1–5 minutes.
-  - `compute_signals`: every 1–5 minutes.
   - `compute_graph_sync`: every 2–5 minutes (incremental Neo4j sync).
   - `compute_graph_insights`: every 5–10 minutes.
 - Jobs use MariaDB-backed locks (`compute_job_locks`) and structured run telemetry (`job_runs`) to prevent overlap and keep run metrics observable.
@@ -299,9 +296,7 @@ SupplyCore no longer relies on cron for execution. `bin/cron_tick.php` is intent
 - `market_comparison_summary_sync`
 - `loss_demand_summary_sync`
 - `dashboard_summary_sync`
-- `rebuild_ai_briefings`
 - `forecasting_ai_sync`
-- `activity_priority_summary_sync`
 - `analytics_bucket_1h_sync`
 - `analytics_bucket_1d_sync`
 - `deal_alerts_sync`
@@ -468,7 +463,7 @@ python/
 
 #### Python worker processing flow
 
-- `sync_schedules.execution_mode` now explicitly routes `market_comparison_summary_sync`, `loss_demand_summary_sync`, `activity_priority_summary_sync`, `dashboard_summary_sync`, and `doctrine_intelligence_sync` to the Python worker by default.
+- `sync_schedules.execution_mode` now explicitly routes `market_comparison_summary_sync`, `loss_demand_summary_sync`, `dashboard_summary_sync`, and `doctrine_intelligence_sync` to the Python worker by default.
 - `market_comparison_summary_sync` is the first fully migrated example: Python fetches DB credentials from `bin/orchestrator_config.php`, requests job-specific context through `bin/python_scheduler_bridge.php`, paginates `market_order_snapshots_summary` by `type_id`, pushes aggregation work into SQL, evaluates scoring in Python, and writes the finished materialized snapshot back through the bridge.
 - After each batch the worker logs rows processed, batches completed, wall time, and current memory usage; the worker aborts if it exceeds the configured threshold (`scheduler.memory_abort_threshold_bytes`, default target 512 MB for Python jobs).
 - Final scheduler bookkeeping still reuses PHP domain helpers through the bridge so `sync_state`, `sync_runs`, `sync_schedules`, UI refresh notifications, and scheduler event logs stay consistent with existing observability.

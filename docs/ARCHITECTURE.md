@@ -227,8 +227,7 @@ Fallback: supplycore-loop-runner.service      ─► All jobs in one process (mo
 graph_universe_sync
     └── compute_graph_sync ──────────────────────► (runs until cursor exhausted)
             ├── compute_graph_sync_battle_intelligence ► (runs until done)
-            ├── compute_graph_sync_killmail_entities
-            └── compute_graph_sync_doctrine_dependency ► (runs until done)
+            └── compute_graph_sync_killmail_entities
 ```
 
 ### Battle Intelligence Pipeline

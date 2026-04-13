@@ -19,7 +19,6 @@ It also checks for hidden scheduler-runtime-only guards and PHP bridge dependenc
 | job_key | python_native | worker_safe | cli_safe | scheduler_safe | hidden_runtime_guard | fix_applied | notes |
 |---|---|---|---|---|---|---|---|
 | compute_graph_sync | yes | yes | yes | yes | no | yes | Uses shared `neo4j_runtime(...)` extraction across launcher paths. |
-| compute_graph_sync_doctrine_dependency | yes | yes | yes | yes | no | yes | Uses shared `neo4j_runtime(...)` extraction across launcher paths. |
 | compute_graph_sync_battle_intelligence | yes | yes | yes | yes | no | yes | Uses shared `neo4j_runtime(...)` extraction across launcher paths. |
 | compute_graph_derived_relationships | yes | yes | yes | yes | no | yes | Uses shared `neo4j_runtime(...)` extraction across launcher paths. |
 | compute_graph_insights | yes | yes | yes | yes | no | yes | Uses shared `neo4j_runtime(...)` extraction across launcher paths. |
@@ -28,7 +27,6 @@ It also checks for hidden scheduler-runtime-only guards and PHP bridge dependenc
 | compute_behavioral_baselines | yes | yes | yes | yes | no | yes | Uses shared `battle_runtime(...)` extraction across launcher paths. |
 | compute_suspicion_scores_v2 | yes | yes | yes | yes | no | yes | Uses shared `battle_runtime(...)` extraction across launcher paths. |
 | compute_buy_all | yes | yes | n/a (no dedicated CLI command) | yes | no | no | Python-native processor in worker + scheduler runner; no runtime guard found. |
-| compute_signals | yes | yes | n/a (no dedicated CLI command) | yes | no | yes | Uses shared `influx_runtime(...)` extraction across launcher paths that execute it. |
 | compute_battle_rollups | yes | yes | yes | yes | no | yes | Uses shared `battle_runtime(...)`; same function path in all launchers. |
 | compute_battle_target_metrics | yes | yes | yes | yes | no | yes | Uses shared `battle_runtime(...)`; same function path in all launchers. |
 | compute_battle_anomalies | yes | yes | yes | yes | no | yes | Uses shared `battle_runtime(...)`; same function path in all launchers. |

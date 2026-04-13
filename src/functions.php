@@ -474,12 +474,6 @@ function nav_groups(): array
                     'children' => [],
                 ],
                 [
-                    'label' => 'Activity Priority',
-                    'path' => '/activity-priority',
-                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7h16"/><path stroke-linecap="round" stroke-linejoin="round" d="M6 12h12"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 17h6"/><path stroke-linecap="round" stroke-linejoin="round" d="m15 5 4 4-4 4"/></svg>',
-                    'children' => [],
-                ],
-                [
                     'label' => 'Log Viewer',
                     'path' => '/log-viewer',
                     'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v0a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2Z"/><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6M9 16h6"/></svg>',
@@ -2271,16 +2265,6 @@ function supplycore_analytics_cache_ttl(): int
         : max(60, min(3600, (int) get_setting('analytics_bucket_cache_ttl_seconds', '300')));
 }
 
-function supplycore_activity_doctrine_cache_key(): string
-{
-    return 'activity:doctrine';
-}
-
-function supplycore_activity_items_cache_key(): string
-{
-    return 'activity:items';
-}
-
 function supplycore_dashboard_top_cache_key(): string
 {
     return 'dashboard:top';
@@ -3072,11 +3056,6 @@ function scheduler_operational_profile_matrix(string $profile): array
             'medium' => ['interval_minutes' => 12, 'timeout_seconds' => 180, 'priority' => 'high'],
             'high' => ['interval_minutes' => 6, 'timeout_seconds' => 240, 'priority' => 'high'],
         ],
-        'rebuild_ai_briefings' => [
-            'low' => ['interval_minutes' => 30, 'timeout_seconds' => 240, 'priority' => 'normal', 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-            'medium' => ['interval_minutes' => 20, 'timeout_seconds' => 300, 'priority' => 'normal'],
-            'high' => ['interval_minutes' => 15, 'timeout_seconds' => 420, 'priority' => 'medium'],
-        ],
         'market_hub_local_history_sync' => [
             'low' => ['interval_minutes' => 30, 'timeout_seconds' => 1500, 'priority' => 'normal'],
             'medium' => ['interval_minutes' => 12, 'timeout_seconds' => 1800, 'priority' => 'normal'],
@@ -3096,11 +3075,6 @@ function scheduler_operational_profile_matrix(string $profile): array
             'low' => ['interval_minutes' => 120, 'timeout_seconds' => 300, 'priority' => 'normal', 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
             'medium' => ['interval_minutes' => 60, 'timeout_seconds' => 300, 'priority' => 'normal'],
             'high' => ['interval_minutes' => 45, 'timeout_seconds' => 420, 'priority' => 'normal'],
-        ],
-        'activity_priority_summary_sync' => [
-            'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal', 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-            'medium' => ['interval_minutes' => 15, 'timeout_seconds' => 180, 'priority' => 'normal'],
-            'high' => ['interval_minutes' => 10, 'timeout_seconds' => 240, 'priority' => 'medium'],
         ],
         'analytics_bucket_1h_sync' => [
             'low' => ['interval_minutes' => 20, 'timeout_seconds' => 180, 'priority' => 'normal', 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
@@ -4568,8 +4542,7 @@ function supplycore_authoritative_job_registry(): array
         'train_spy_shadow_model' => ['label' => 'Shadow ML Trainer', 'description' => 'Train logistic regression baseline on versioned feature snapshots and analyst-labeled splits. Phase 6 shadow ML — manual trigger, disabled by default.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 1440, 'default_offset_minutes' => 54, 'priority' => 'low', 'timeout_seconds' => 3600, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'score_spy_shadow_ml' => ['label' => 'Shadow ML Scorer', 'description' => 'Score current feature snapshots against registered shadow models. Phase 6 shadow ML — never drives primary triage.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 56, 'priority' => 'low', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_suspicion_scores' => ['label' => 'Suspicion Scores', 'description' => 'Compute baseline suspicion scores.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 25, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
-        'compute_graph_sync_doctrine_dependency' => ['label' => 'Graph Doctrine Dependency', 'description' => 'Child graph task for doctrine dependency links.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 26, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
-        'compute_graph_sync_battle_intelligence' => ['label' => 'Graph Battle Intelligence', 'description' => 'Child graph task for battle-intelligence edge updates.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
+        'compute_graph_sync_battle_intelligence' =>['label' => 'Graph Battle Intelligence', 'description' => 'Child graph task for battle-intelligence edge updates.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 27, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
         'compute_graph_derived_relationships' => ['label' => 'Graph Derived Relationships', 'description' => 'Expand derived relationship edges in the intelligence graph.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 28, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_graph_prune' => ['label' => 'Graph Prune', 'description' => 'Child graph task for stale-edge pruning.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 29, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
         'compute_graph_topology_metrics' => ['label' => 'Graph Topology Metrics', 'description' => 'Child graph task for topology metric derivation.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => false, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 30, 'priority' => 'normal', 'timeout_seconds' => 420, 'concurrency_policy' => 'background', 'explicitly_configured' => false, 'parent_job_key' => 'compute_graph_sync', 'python_implementation_exists' => true, 'worker_safe' => true, 'notes' => 'Triggered by compute_graph_sync.'],
@@ -4651,13 +4624,10 @@ function supplycore_authoritative_job_registry(): array
         'market_comparison_summary_sync' => ['label' => 'Market Comparison Summary', 'description' => 'Refresh market comparison summary snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 9, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'loss_demand_summary_sync' => ['label' => 'Loss Demand Summary', 'description' => 'Refresh loss-demand summary snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 10, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'dashboard_summary_sync' => ['label' => 'Dashboard Summary', 'description' => 'Refresh dashboard summary snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 11, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-        'rebuild_ai_briefings' => ['label' => 'Rebuild AI Briefings', 'description' => 'Rebuild compact AI briefing artifacts.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 12, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'forecasting_ai_sync' => ['label' => 'Forecasting AI', 'description' => 'Refresh forecasting intelligence snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 33, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'background', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-        'activity_priority_summary_sync' => ['label' => 'Activity Priority Summary', 'description' => 'Refresh activity-priority summary snapshot.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 13, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'analytics_bucket_1h_sync' => ['label' => 'Analytics Buckets (1h)', 'description' => 'Roll up analytics into hourly buckets.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 15, 'priority' => 'normal', 'timeout_seconds' => 180, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'analytics_bucket_1d_sync' => ['label' => 'Analytics Buckets (1d)', 'description' => 'Roll up analytics into daily buckets.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 16, 'priority' => 'normal', 'timeout_seconds' => 240, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'deal_alerts_sync' => ['label' => 'Deal Alerts', 'description' => 'Refresh deal alert materialization.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 5, 'default_offset_minutes' => 1, 'priority' => 'high', 'timeout_seconds' => 90, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
-        'compute_signals' => ['label' => 'Compute Signals', 'description' => 'Compute market signal features.', 'category' => 'real_schedulable', 'enabled_by_default' => false, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 15, 'default_offset_minutes' => 20, 'priority' => 'normal', 'timeout_seconds' => 300, 'concurrency_policy' => 'single', 'explicitly_configured' => true, 'python_implementation_exists' => true, 'worker_safe' => true, 'review_reason' => 'validated via python worker pool/job runner/manual CLI parity checks.'],
         'compute_map_intelligence' => ['label' => 'Map Intelligence', 'description' => 'Precompute chokepoints, system centrality, and edge risk intelligence.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
         'compute_opposition_daily_snapshots' => ['label' => 'Opposition Daily Snapshots', 'description' => 'Daily alliance-opposition snapshot materialization for analyst workflows.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 60, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 600, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
         'character_pipeline_worker' => ['label' => 'Character Pipeline Worker', 'description' => 'Batch character intelligence pipeline executor.', 'category' => 'real_schedulable', 'enabled_by_default' => true, 'schedulable' => true, 'settings_visible' => true, 'user_visible' => true, 'execution_mode' => 'python', 'default_interval_minutes' => 30, 'default_offset_minutes' => 0, 'priority' => 'normal', 'timeout_seconds' => 900, 'concurrency_policy' => 'single', 'explicitly_configured' => false, 'python_implementation_exists' => true, 'worker_safe' => true],
@@ -4721,7 +4691,6 @@ function worker_job_registry_definitions(): array
 {
     return [
         'compute_graph_sync' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
-        'compute_graph_sync_doctrine_dependency' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_graph_sync_battle_intelligence' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_graph_derived_relationships' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_graph_insights' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
@@ -4731,7 +4700,6 @@ function worker_job_registry_definitions(): array
         'compute_suspicion_scores_v2' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_auto_doctrines' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 600, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 3],
         'compute_auto_buyall' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'high', 'interval_seconds' => 3600, 'timeout_seconds' => 420, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 30, 'max_attempts' => 4],
-        'compute_signals' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 900, 'timeout_seconds' => 300, 'memory_limit_mb' => 768, 'retry_delay_seconds' => 60, 'max_attempts' => 4],
         'compute_battle_rollups' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_behavioral_scoring' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 3600, 'timeout_seconds' => 1800, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
         'compute_battle_target_metrics' => ['workload_class' => 'compute', 'execution_mode' => 'python', 'queue_name' => 'compute', 'priority' => 'normal', 'interval_seconds' => 600, 'timeout_seconds' => 420, 'memory_limit_mb' => 1024, 'retry_delay_seconds' => 90, 'max_attempts' => 4],
@@ -5255,7 +5223,7 @@ function scheduler_job_workload_profile(string $jobKey): array
         'market_comparison_summary_sync' => 'heavy market aggregation over large current-order projections; prefer SQL plus Python batch execution',
         'current_state_refresh_sync' => 'heavy snapshot generation that assembles multiple materialized summary layers',
         'market_hub_local_history_sync', 'alliance_historical_sync', 'market_hub_historical_sync' => 'heavy snapshot/history rebuild over large market windows; prefer batched execution outside PHP request memory',
-        'killmail_r2z2_sync', 'activity_priority_summary_sync' => 'heavy killmail ingestion and derived activity recomputation with large append-only tables',
+        'killmail_r2z2_sync' => 'heavy killmail ingestion and derived activity recomputation with large append-only tables',
         default => 'lightweight control-plane or summary job that is safe to keep in PHP',
     };
 
@@ -5304,9 +5272,7 @@ function scheduler_job_safety_rules(): array
     return [
         'alliance_historical_sync' => ['must_run_alone' => true, 'forbidden_with' => ['alliance_current_sync', 'current_state_refresh_sync']],
         'market_hub_historical_sync' => ['must_run_alone' => true, 'forbidden_with' => ['market_hub_current_sync', 'deal_alerts_sync']],
-        'market_hub_local_history_sync' => ['must_run_alone' => true, 'forbidden_with' => ['market_hub_current_sync', 'rebuild_ai_briefings']],
-        'rebuild_ai_briefings' => ['forbidden_with' => scheduler_ai_briefing_blocking_job_keys()],
-        'forecasting_ai_sync' => ['forbidden_with' => ['rebuild_ai_briefings']],
+        'market_hub_local_history_sync' => ['must_run_alone' => true, 'forbidden_with' => ['market_hub_current_sync']],
         'killmail_r2z2_sync' => ['allowed_groups' => ['light', 'medium']],
         'deal_alerts_sync' => ['allowed_groups' => ['light', 'medium', 'heavy']],
     ];
@@ -7473,7 +7439,6 @@ function automation_runtime_job_group(string $jobKey): string
         'alliance_historical_sync' => 'Market & Trading',
         'current_state_refresh_sync' => 'Market & Trading',
         'deal_alerts_sync' => 'Market & Trading',
-        'compute_signals' => 'Market & Trading',
         'market_comparison_summary_sync' => 'Market & Trading',
         'loss_demand_summary_sync' => 'Market & Trading',
         'compute_economic_warfare' => 'Market & Trading',
@@ -7505,7 +7470,6 @@ function automation_runtime_job_group(string $jobKey): string
         'compute_graph_derived_relationships' => 'Intelligence Graph',
         'compute_graph_sync_killmail_entities' => 'Intelligence Graph',
         'compute_graph_sync_killmail_edges' => 'Intelligence Graph',
-        'compute_graph_sync_doctrine_dependency' => 'Intelligence Graph',
         'compute_graph_sync_battle_intelligence' => 'Intelligence Graph',
         'compute_graph_prune' => 'Intelligence Graph',
         'compute_graph_topology_metrics' => 'Intelligence Graph',
@@ -7563,10 +7527,8 @@ function automation_runtime_job_group(string $jobKey): string
 
         // Dashboard & Analytics
         'dashboard_summary_sync' => 'Dashboard & Analytics',
-        'activity_priority_summary_sync' => 'Dashboard & Analytics',
         'analytics_bucket_1h_sync' => 'Dashboard & Analytics',
         'analytics_bucket_1d_sync' => 'Dashboard & Analytics',
-        'rebuild_ai_briefings' => 'Dashboard & Analytics',
         'forecasting_ai_sync' => 'Dashboard & Analytics',
 
         // System Maintenance
@@ -7617,7 +7579,6 @@ function automation_runtime_job_tier(string $jobKey): array
         // ── Tier 2: Resolution & Enrichment ─────────────────────────────
         'entity_metadata_resolve_sync' => 2,
         'esi_alliance_history_sync' => 2,
-        'compute_signals' => 2,
         'deal_alerts_sync' => 2,
 
         // ── Tier 3: Graph & Computation ─────────────────────────────────
@@ -7626,7 +7587,6 @@ function automation_runtime_job_tier(string $jobKey): array
         'compute_graph_derived_relationships' => 3,
         'compute_graph_sync_killmail_entities' => 3,
         'compute_graph_sync_killmail_edges' => 3,
-        'compute_graph_sync_doctrine_dependency' => 3,
         'compute_graph_sync_battle_intelligence' => 3,
         'compute_graph_prune' => 3,
         'compute_graph_topology_metrics' => 3,
@@ -7666,10 +7626,8 @@ function automation_runtime_job_tier(string $jobKey): array
 
         // ── Tier 5: Analytics & Output ──────────────────────────────────
         'dashboard_summary_sync' => 5,
-        'activity_priority_summary_sync' => 5,
         'analytics_bucket_1h_sync' => 5,
         'analytics_bucket_1d_sync' => 5,
-        'rebuild_ai_briefings' => 5,
         'forecasting_ai_sync' => 5,
         'market_comparison_summary_sync' => 5,
         'loss_demand_summary_sync' => 5,
@@ -9823,13 +9781,6 @@ function supplycore_settings_runtime_datasets(): array
             'source' => 'snapshot',
             'snapshot_key' => dashboard_snapshot_key(),
             'job_key' => 'dashboard_summary_sync',
-        ],
-        [
-            'key' => 'activity_priority',
-            'label' => 'Activity priority summary',
-            'source' => 'snapshot',
-            'snapshot_key' => activity_priority_snapshot_key(),
-            'job_key' => 'activity_priority_summary_sync',
         ],
         [
             'key' => 'loss_demand',
@@ -13431,11 +13382,6 @@ function scheduler_job_definitions(): array
             'lock_ttl_seconds' => 300,
             'execution_mode' => 'python',
         ],
-        'activity_priority_summary_sync' => [
-            'timeout_seconds' => 180,
-            'lock_ttl_seconds' => 300,
-            'execution_mode' => 'python',
-        ],
         'analytics_bucket_1h_sync' => [
             'timeout_seconds' => 180,
             'lock_ttl_seconds' => 300,
@@ -13444,12 +13390,6 @@ function scheduler_job_definitions(): array
         'analytics_bucket_1d_sync' => [
             'timeout_seconds' => 240,
             'lock_ttl_seconds' => 360,
-            'execution_mode' => 'python',
-        ],
-        'rebuild_ai_briefings' => [
-            'timeout_seconds' => 300,
-            'lock_ttl_seconds' => 360,
-            'execution' => 'background',
             'execution_mode' => 'python',
         ],
         'forecasting_ai_sync' => [
@@ -13461,12 +13401,6 @@ function scheduler_job_definitions(): array
         'compute_graph_sync' => [
             'timeout_seconds' => 300,
             'lock_ttl_seconds' => 360,
-            'execution' => 'background',
-            'execution_mode' => 'python',
-        ],
-        'compute_graph_sync_doctrine_dependency' => [
-            'timeout_seconds' => 420,
-            'lock_ttl_seconds' => 480,
             'execution' => 'background',
             'execution_mode' => 'python',
         ],
@@ -13509,12 +13443,6 @@ function scheduler_job_definitions(): array
         'compute_suspicion_scores_v2' => [
             'timeout_seconds' => 420,
             'lock_ttl_seconds' => 480,
-            'execution' => 'background',
-            'execution_mode' => 'python',
-        ],
-        'compute_signals' => [
-            'timeout_seconds' => 300,
-            'lock_ttl_seconds' => 360,
             'execution' => 'background',
             'execution_mode' => 'python',
         ],
@@ -13576,13 +13504,10 @@ function scheduler_job_type(string $jobKey): string
         'market_comparison_summary_sync' => 'sync.market_summary',
         'loss_demand_summary_sync' => 'sync.loss_demand',
         'dashboard_summary_sync' => 'sync.dashboard',
-        'activity_priority_summary_sync' => 'sync.activity_priority',
         'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync' => 'sync.analytics',
-        'rebuild_ai_briefings' => 'sync.doctrine_ai',
         'forecasting_ai_sync' => 'sync.forecasting',
         'killmail_r2z2_sync' => 'sync.killmail',
         'compute_graph_sync' => 'compute.graph_sync',
-        'compute_graph_sync_doctrine_dependency' => 'compute.graph_sync_doctrine_dependency',
         'compute_graph_sync_battle_intelligence' => 'compute.graph_sync_battle_intelligence',
         'compute_graph_derived_relationships' => 'compute.graph_derived_relationships',
         'compute_graph_insights' => 'compute.graph_insights',
@@ -13592,7 +13517,6 @@ function scheduler_job_type(string $jobKey): string
         'compute_suspicion_scores_v2' => 'compute.suspicion_scores_v2',
         'compute_auto_doctrines' => 'compute.auto_doctrines',
         'compute_auto_buyall' => 'compute.auto_buyall',
-        'compute_signals' => 'compute.signals',
         'compute_battle_rollups' => 'compute.battle_rollups',
         'compute_battle_target_metrics' => 'compute.battle_target_metrics',
         'compute_battle_anomalies' => 'compute.battle_anomalies',
@@ -13833,18 +13757,6 @@ function scheduler_change_aware_job_definitions(): array
                 ['signal_key' => 'loss_demand_version', 'label' => 'Loss demand summary', 'resolver' => static fn (): ?array => scheduler_change_signal_version('loss_demand_version', 'Loss demand summary')],
             ],
             'output_version_keys' => ['dashboard_summary_version'],
-        ],
-        'activity_priority_summary_sync' => [
-            'change_aware' => true,
-            'supports_no_change_skip' => true,
-            'requires_forced_periodic_refresh' => true,
-            'freshness_ceiling_seconds' => 3600,
-            'minimum_rerun_gap_seconds' => 300,
-            'upstream_job_keys' => ['killmail_r2z2_sync'],
-            'upstream_signals' => [
-                ['signal_key' => 'killmail_activity_version', 'label' => 'Killmail activity', 'resolver' => static fn (): ?array => scheduler_change_signal_version('killmail_activity_version', 'Killmail activity')],
-            ],
-            'output_version_keys' => ['activity_priority_version'],
         ],
         'deal_alerts_sync' => [
             'change_aware' => true,
@@ -14150,24 +14062,6 @@ function scheduler_registry_bootstrap(): void
                 ['source' => 'code-discovery']
             );
         }
-    }
-}
-
-function scheduler_ai_briefing_blocking_job_keys(): array
-{
-    return [
-        'alliance_historical_sync',
-        'market_hub_historical_sync',
-        'market_hub_local_history_sync',
-    ];
-}
-
-function scheduler_ai_briefing_running_history_jobs(): array
-{
-    try {
-        return db_sync_schedule_running_job_keys(scheduler_ai_briefing_blocking_job_keys());
-    } catch (Throwable) {
-        return [];
     }
 }
 
@@ -16185,7 +16079,7 @@ function python_bridge_post_sync_result(string $jobKey, string $status, int $row
 
     $downstreamJobKeys = [];
     if ($safeJobKey === 'killmail_r2z2_sync' && $rowsWritten > 0) {
-        $downstreamJobKeys = ['activity_priority_summary_sync', 'loss_demand_summary_sync'];
+        $downstreamJobKeys = ['loss_demand_summary_sync'];
     }
 
     if ($downstreamJobKeys === []) {
@@ -20352,7 +20246,6 @@ function supplycore_materialized_snapshot_keys(): array
         'market_comparison_summaries',
         'loss_demand_summaries',
         'dashboard_summaries',
-        'activity_priority_summaries',
     ];
 }
 
@@ -20700,11 +20593,6 @@ function supplycore_ui_refresh_section_version_definitions(): array
             'ui_sections' => ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues'],
             'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('dashboard_summary_version', dashboard_snapshot_key(), ['dashboard'], ['page-freshness', 'dashboard-kpis', 'dashboard-buyall', 'dashboard-doctrine', 'dashboard-queues']),
         ],
-        'activity_priority_version' => [
-            'domains' => ['activity_priority', 'doctrine_activity'],
-            'ui_sections' => ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine'],
-            'resolver' => static fn (): array => supplycore_ui_refresh_version_from_snapshot('activity_priority_version', activity_priority_snapshot_key(), ['activity_priority', 'doctrine_activity'], ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine']),
-        ],
         'deal_alerts_version' => [
             'domains' => ['deal_alerts'],
             'ui_sections' => ['deal-alerts-summary', 'deal-alerts-status', 'deal-alerts-table'],
@@ -20812,9 +20700,9 @@ function supplycore_ui_refresh_job_domain_map(): array
 {
     return [
         'killmail_r2z2_sync' => [
-            'domains' => ['doctrine_activity', 'loss_aware_views', 'activity_priority', 'killmail_overview'],
+            'domains' => ['doctrine_activity', 'loss_aware_views', 'killmail_overview'],
             'ui_sections' => ['activity-doctrines', 'activity-sidebar', 'activity-items', 'doctrine-fit-history', 'killmail-overview-summary', 'killmail-overview-status', 'killmail-overview-table'],
-            'version_keys' => ['killmail_activity_version', 'activity_priority_version', 'killmail_overview_version'],
+            'version_keys' => ['killmail_activity_version', 'killmail_overview_version'],
         ],
         'alliance_current_sync' => [
             'domains' => ['alliance_stock', 'doctrine_readiness', 'fit_availability', 'buyall'],
@@ -20845,11 +20733,6 @@ function supplycore_ui_refresh_job_domain_map(): array
             'domains' => ['loss_aware_views', 'dashboard'],
             'ui_sections' => ['dashboard-queues'],
             'version_keys' => ['loss_demand_version', 'dashboard_summary_version'],
-        ],
-        'activity_priority_summary_sync' => [
-            'domains' => ['activity_priority', 'doctrine_activity'],
-            'ui_sections' => ['activity-summary', 'activity-doctrines', 'activity-sidebar', 'activity-items', 'dashboard-doctrine'],
-            'version_keys' => ['activity_priority_version'],
         ],
         'current_state_refresh_sync' => [
             'domains' => ['dashboard', 'market_comparison', 'loss_aware_views'],
@@ -21146,13 +21029,13 @@ function supplycore_live_refresh_page_registry(): array
             'path' => '/index.php',
             'public_path' => '/',
             'script' => dirname(__DIR__) . '/public/index.php',
-            'domains' => ['dashboard', 'market_prices', 'alliance_stock', 'buyall', 'doctrine_readiness', 'activity_priority', 'loss_aware_views'],
-            'version_keys' => ['dashboard_summary_version', 'market_prices_version', 'alliance_stock_version', 'buyall_version', 'activity_priority_version', 'loss_demand_version'],
+            'domains' => ['dashboard', 'market_prices', 'alliance_stock', 'buyall', 'doctrine_readiness', 'loss_aware_views'],
+            'version_keys' => ['dashboard_summary_version', 'market_prices_version', 'alliance_stock_version', 'buyall_version', 'loss_demand_version'],
             'sections' => [
                 'page-freshness' => ['version_keys' => ['dashboard_summary_version']],
                 'dashboard-kpis' => ['version_keys' => ['dashboard_summary_version']],
                 'dashboard-buyall' => ['version_keys' => ['dashboard_summary_version', 'buyall_version']],
-                'dashboard-doctrine' => ['version_keys' => ['dashboard_summary_version', 'activity_priority_version']],
+                'dashboard-doctrine' => ['version_keys' => ['dashboard_summary_version']],
                 'dashboard-queues' => ['version_keys' => ['dashboard_summary_version', 'market_prices_version', 'alliance_stock_version', 'market_comparison_version', 'loss_demand_version']],
             ],
         ],
@@ -21165,20 +21048,6 @@ function supplycore_live_refresh_page_registry(): array
             'sections' => [
                 'buyall-overview' => ['version_keys' => ['buyall_version', 'market_prices_version', 'alliance_stock_version']],
                 'buyall-results' => ['version_keys' => ['buyall_version', 'market_prices_version', 'alliance_stock_version']],
-            ],
-        ],
-        'activity_priority' => [
-            'path' => '/activity-priority/index.php',
-            'public_path' => '/activity-priority',
-            'script' => dirname(__DIR__) . '/public/activity-priority/index.php',
-            'domains' => ['activity_priority', 'doctrine_readiness', 'doctrine_activity', 'loss_aware_views'],
-            'version_keys' => ['activity_priority_version', 'killmail_activity_version'],
-            'sections' => [
-                'page-freshness' => ['version_keys' => ['activity_priority_version']],
-                'activity-summary' => ['version_keys' => ['activity_priority_version']],
-                'activity-doctrines' => ['version_keys' => ['activity_priority_version', 'killmail_activity_version']],
-                'activity-sidebar' => ['version_keys' => ['activity_priority_version', 'killmail_activity_version']],
-                'activity-items' => ['version_keys' => ['activity_priority_version', 'killmail_activity_version']],
             ],
         ],
         'deal_alerts' => [
@@ -21796,7 +21665,6 @@ function supplycore_rebuild_rollup_layers(string $reason = 'manual', ?int $windo
 
     $currentState = supplycore_refresh_current_state_cache($reason . ':current-state');
     // Legacy doctrine snapshot refresh is retired.
-    $activity = activity_priority_refresh_summary($reason . ':activity-priority');
 
     return [
         'reason' => $reason,
@@ -21810,7 +21678,6 @@ function supplycore_rebuild_rollup_layers(string $reason = 'manual', ?int $windo
         'local_daily_rows_written' => $localDailyRowsWritten,
         'current_state_rows_written' => (int) ($currentState['rows_written'] ?? 0),
         'doctrine_snapshot_groups' => 0,
-        'activity_rows' => count((array) ($activity['rows'] ?? [])),
     ];
 }
 
@@ -24170,751 +24037,6 @@ function theater_ai_verdict_color_class(string $verdict): string
     };
 }
 
-function rebuild_ai_briefings_job_result(string $reason = 'manual'): array
-{
-    // Doctrine AI briefings have been retired — return a success/no-op result
-    // so the scheduler can check off the job without fatal errors.
-    return sync_result_shape() + [
-        'rows_seen' => 0,
-        'rows_written' => 0,
-        'cursor' => 'doctrine_ai_briefings:retired',
-        'checksum' => 'retired',
-        'meta' => [
-            'outcome_reason' => 'Doctrine AI briefings retired.',
-        ],
-    ];
-}
-
-function activity_priority_snapshot_key(): string
-{
-    return 'activity_priority_summaries';
-}
-
-function activity_priority_snapshot_payload(): array
-{
-    $doctrineCached = supplycore_cached_json_read(supplycore_activity_doctrine_cache_key());
-    $itemsCached = supplycore_cached_json_read(supplycore_activity_items_cache_key());
-    if (is_array($doctrineCached) && is_array($itemsCached) && $doctrineCached !== [] && $itemsCached !== []) {
-        return $doctrineCached + $itemsCached;
-    }
-
-    return supplycore_materialized_snapshot_read_or_bootstrap(
-        activity_priority_snapshot_key(),
-        static fn (): array => activity_priority_summary_build('bootstrap'),
-        'activity-priority-bootstrap'
-    );
-}
-
-function activity_priority_refresh_summary(string $reason = 'manual'): array
-{
-    supplycore_materialized_snapshot_mark_updating(activity_priority_snapshot_key(), $reason);
-    $snapshot = activity_priority_summary_build($reason);
-    $stored = supplycore_materialized_snapshot_store(activity_priority_snapshot_key(), $snapshot, [
-        'reason' => $reason,
-        'group_count' => count((array) ($snapshot['active_doctrines'] ?? [])),
-        'item_count' => count((array) ($snapshot['priority_items'] ?? [])),
-    ]);
-
-    supplycore_cached_json_write(supplycore_activity_doctrine_cache_key(), [
-        'summary_cards' => array_values((array) ($stored['summary_cards'] ?? [])),
-        'active_doctrines' => array_values((array) ($stored['active_doctrines'] ?? [])),
-        'active_fits' => array_values((array) ($stored['active_fits'] ?? [])),
-        'trend_movement' => is_array($stored['trend_movement'] ?? null) ? $stored['trend_movement'] : [],
-        '_freshness' => is_array($stored['_freshness'] ?? null) ? $stored['_freshness'] : [],
-    ]);
-    supplycore_cached_json_write(supplycore_activity_items_cache_key(), [
-        'priority_items' => array_values((array) ($stored['priority_items'] ?? [])),
-        'questions_answered' => is_array($stored['questions_answered'] ?? null) ? $stored['questions_answered'] : [],
-        '_freshness' => is_array($stored['_freshness'] ?? null) ? $stored['_freshness'] : [],
-    ]);
-
-    return $stored;
-}
-
-function activity_priority_refresh_summary_job_result(string $reason = 'manual'): array
-{
-    $snapshot = activity_priority_refresh_summary($reason);
-    $rowCount = count((array) ($snapshot['active_doctrines'] ?? [])) + count((array) ($snapshot['priority_items'] ?? []));
-    $freshness = is_array($snapshot['_freshness'] ?? null) ? $snapshot['_freshness'] : [];
-
-    return sync_result_shape() + [
-        'rows_seen' => $rowCount,
-        'rows_written' => $rowCount,
-        'cursor' => 'activity_priority:' . gmdate('Y-m-d H:i:s'),
-        'checksum' => sync_checksum([
-            'rows' => $rowCount,
-            'computed_at' => (string) ($freshness['computed_at'] ?? gmdate(DATE_ATOM)),
-            'reason' => $reason,
-        ]),
-        'meta' => [
-            'outcome_reason' => 'Doctrine activity and item-priority summaries were recomputed from tracked losses, doctrine definitions, and local market pressure signals.',
-            'snapshot_generated_at' => (string) ($freshness['computed_at'] ?? ''),
-        ],
-    ];
-}
-
-/**
- * Aggregate loss counts per hull_type_id over 1d / 3d / 7d / 30d
- * windows directly from ``killmail_events`` — the authoritative ingest
- * table. We intentionally don't use ``killmail_hull_loss_1d`` /
- * ``killmail_item_loss_1d`` here because the rollup populator is on a
- * separate schedule and the rollups can lag or stay empty on servers
- * where the analytics bucket jobs aren't actively running.
- *
- * Returns ``{hull_type_id: {h24, h3d, h7d, h30d}}`` for hulls.
- */
-function activity_priority_hull_loss_windows(array $hullTypeIds): array
-{
-    $hullTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $id): bool => $id > 0)));
-    if ($hullTypeIds === []) {
-        return [];
-    }
-    $placeholders = implode(',', array_fill(0, count($hullTypeIds), '?'));
-    $rows = db_select(
-        "SELECT victim_ship_type_id AS hull_type_id,
-                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)  THEN 1 ELSE 0 END) AS h24,
-                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 DAY)  THEN 1 ELSE 0 END) AS h3d,
-                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)  THEN 1 ELSE 0 END) AS h7d,
-                SUM(CASE WHEN killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY) THEN 1 ELSE 0 END) AS h30d
-           FROM killmail_events
-          WHERE mail_type = 'loss'
-            AND victim_ship_type_id IN ({$placeholders})
-            AND killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY)
-          GROUP BY victim_ship_type_id",
-        $hullTypeIds
-    );
-    $out = [];
-    foreach ($rows as $row) {
-        $out[(int) ($row['hull_type_id'] ?? 0)] = [
-            'h24'  => (int) ($row['h24'] ?? 0),
-            'h3d'  => (int) ($row['h3d'] ?? 0),
-            'h7d'  => (int) ($row['h7d'] ?? 0),
-            'h30d' => (int) ($row['h30d'] ?? 0),
-        ];
-    }
-    return $out;
-}
-
-/**
- * Aggregate fitted-module losses per hull_type_id over 24h / 3d / 7d
- * windows. Counts ``killmail_items`` rows from loss killmails joined on
- * the configured fitted-slot flag ranges, filtered to actual modules
- * (category 7) and subsystems (category 32) to match the detector's
- * cluster-input filter.
- */
-function activity_priority_module_loss_windows(array $hullTypeIds): array
-{
-    $hullTypeIds = array_values(array_unique(array_filter(array_map('intval', $hullTypeIds), static fn (int $id): bool => $id > 0)));
-    if ($hullTypeIds === []) {
-        return [];
-    }
-    $placeholders = implode(',', array_fill(0, count($hullTypeIds), '?'));
-    $rows = db_select(
-        "SELECT ke.victim_ship_type_id AS hull_type_id,
-                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY) THEN 1 ELSE 0 END) AS h24,
-                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 3 DAY) THEN 1 ELSE 0 END) AS h3d,
-                SUM(CASE WHEN ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY) THEN 1 ELSE 0 END) AS h7d
-           FROM killmail_events ke
-           INNER JOIN killmail_items ki ON ki.sequence_id = ke.sequence_id
-           INNER JOIN ref_item_types rit ON rit.type_id = ki.item_type_id
-          WHERE ke.mail_type = 'loss'
-            AND ke.victim_ship_type_id IN ({$placeholders})
-            AND ke.killmail_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)
-            AND (ki.item_flag BETWEEN 11 AND 34
-                 OR ki.item_flag BETWEEN 92 AND 94
-                 OR ki.item_flag BETWEEN 125 AND 132)
-            AND rit.category_id IN (7, 32)
-          GROUP BY ke.victim_ship_type_id",
-        $hullTypeIds
-    );
-    $out = [];
-    foreach ($rows as $row) {
-        $out[(int) ($row['hull_type_id'] ?? 0)] = [
-            'h24' => (int) ($row['h24'] ?? 0),
-            'h3d' => (int) ($row['h3d'] ?? 0),
-            'h7d' => (int) ($row['h7d'] ?? 0),
-        ];
-    }
-    return $out;
-}
-
-/**
- * For every active doctrine in ``$doctrineIds`` compute how many
- * complete fits the current alliance stock can already cover.
- *
- * The bottleneck is the minimum across every module in the fit:
- *     fits_per_module   = floor(alliance_stock[type_id] / per_fit_qty)
- *     fits_covered      = min(fits_per_module across all modules)
- *
- * Returns ``{doctrine_id: {covered, bottleneck_type_id, bottleneck_fits}}``.
- * Two batched queries regardless of how many doctrines or modules —
- * one to load all modules, one to load all alliance stock snapshots.
- *
- * Doctrines whose core module set is empty return ``covered = 0``
- * (nothing to stock, so no coverage signal).
- */
-function activity_priority_stock_coverage(array $doctrineIds): array
-{
-    $doctrineIds = array_values(array_unique(array_filter(array_map('intval', $doctrineIds), static fn (int $id): bool => $id > 0)));
-    if ($doctrineIds === []) {
-        return [];
-    }
-
-    // Step 1: pull every module row for the target doctrines in one go.
-    $placeholders = implode(',', array_fill(0, count($doctrineIds), '?'));
-    $moduleRows = db_select(
-        "SELECT doctrine_id, type_id, quantity
-           FROM auto_doctrine_modules
-          WHERE doctrine_id IN ({$placeholders})",
-        $doctrineIds
-    );
-
-    // Group modules by doctrine and collect every unique type_id.
-    $modulesByDoctrine = [];
-    $typeIdSet = [];
-    foreach ($moduleRows as $row) {
-        $doctrineId = (int) ($row['doctrine_id'] ?? 0);
-        $typeId = (int) ($row['type_id'] ?? 0);
-        $qty = max(1, (int) ($row['quantity'] ?? 1));
-        if ($doctrineId <= 0 || $typeId <= 0) {
-            continue;
-        }
-        $modulesByDoctrine[$doctrineId][] = ['type_id' => $typeId, 'quantity' => $qty];
-        $typeIdSet[$typeId] = true;
-    }
-
-    // Step 2: latest alliance-structure stock snapshot per type_id.
-    $stockByType = [];
-    if ($typeIdSet !== []) {
-        $typeIds = array_keys($typeIdSet);
-        $typePlaceholders = implode(',', array_fill(0, count($typeIds), '?'));
-        $stockRows = db_select(
-            "SELECT mss.type_id,
-                    COALESCE(mss.total_sell_volume, 0) AS stock_qty
-               FROM market_order_snapshots_summary mss
-               JOIN (
-                   SELECT type_id, MAX(observed_at) AS latest_at
-                     FROM market_order_snapshots_summary
-                    WHERE source_type = 'alliance_structure'
-                      AND type_id IN ({$typePlaceholders})
-                    GROUP BY type_id
-               ) latest
-                 ON latest.type_id = mss.type_id
-                AND latest.latest_at = mss.observed_at
-              WHERE mss.source_type = 'alliance_structure'",
-            $typeIds
-        );
-        foreach ($stockRows as $row) {
-            $stockByType[(int) ($row['type_id'] ?? 0)] = (int) ($row['stock_qty'] ?? 0);
-        }
-    }
-
-    // Step 3: compute the bottleneck per doctrine.
-    $out = [];
-    foreach ($doctrineIds as $doctrineId) {
-        $modules = $modulesByDoctrine[$doctrineId] ?? [];
-        if ($modules === []) {
-            $out[$doctrineId] = ['covered' => 0, 'bottleneck_type_id' => 0];
-            continue;
-        }
-        $bottleneckFits = PHP_INT_MAX;
-        $bottleneckTypeId = 0;
-        foreach ($modules as $m) {
-            $typeId = (int) $m['type_id'];
-            $perFitQty = max(1, (int) $m['quantity']);
-            $stock = (int) ($stockByType[$typeId] ?? 0);
-            $fitsForThisModule = intdiv($stock, $perFitQty);
-            if ($fitsForThisModule < $bottleneckFits) {
-                $bottleneckFits = $fitsForThisModule;
-                $bottleneckTypeId = $typeId;
-            }
-        }
-        if ($bottleneckFits === PHP_INT_MAX) {
-            $bottleneckFits = 0;
-        }
-        $out[$doctrineId] = [
-            'covered'             => $bottleneckFits,
-            'bottleneck_type_id'  => $bottleneckTypeId,
-        ];
-    }
-
-    return $out;
-}
-
-function activity_priority_page_data(): array
-{
-    // The legacy snapshot flow populated doctrine_activity_snapshots from
-    // doctrine_fit_activity_1d — both dropped. We now reshape the auto
-    // doctrine list into the key-shape the existing template expects so
-    // the page renders without template changes.
-    $doctrines = function_exists('auto_doctrine_list') ? auto_doctrine_list(['include_hidden' => false]) : [];
-    $settings = function_exists('auto_doctrine_settings') ? auto_doctrine_settings() : [
-        'window_days' => 30,
-        'default_runway_days' => 14,
-    ];
-
-    $active = array_values(array_filter($doctrines, static fn (array $d): bool => (bool) ($d['is_active'] ?? false) || (bool) ($d['is_pinned'] ?? false)));
-    // Batch-resolve hull-level 24h / 3d / 7d loss windows once. These
-    // are keyed by hull_type_id and shared by every fingerprint on the
-    // same hull, because ``killmail_events`` has no fingerprint column
-    // and we only rollup 30d per-fingerprint counts on the clustering
-    // pass. The 24h/3d/7d breakdown is therefore explicitly labelled
-    // as "hull-level" on the page so operators know it's an aggregate
-    // across every cluster sharing that hull.
-    $hullTypeIds = array_values(array_unique(array_map(static fn (array $d): int => (int) ($d['hull_type_id'] ?? 0), $active)));
-    $hullWindows = activity_priority_hull_loss_windows($hullTypeIds);
-    $moduleWindows = activity_priority_module_loss_windows($hullTypeIds);
-
-    // Stock coverage per doctrine: how many complete fits the current
-    // alliance-structure snapshot can cover, bottlenecked by the most
-    // constrained module in each fit. Used to override the readiness
-    // label and resupply pressure tier so "Critical gap · Urgent
-    // resupply" does not fire on doctrines whose stock is fine.
-    $activeDoctrineIds = array_map(static fn (array $d): int => (int) ($d['id'] ?? 0), $active);
-    $stockCoverage = activity_priority_stock_coverage($activeDoctrineIds);
-
-    $windowDays = max(1, (int) $settings['window_days']);
-    $defaultRunway = max(1, (int) $settings['default_runway_days']);
-
-    // Compute per-fingerprint activity scores FIRST so we can sort and
-    // rank against the real per-cluster numbers instead of the
-    // hull-level aggregate.
-    $scored = [];
-    foreach ($active as $d) {
-        $perFingerprintWindowLosses = (int) ($d['loss_count_window'] ?? 0);
-        $runwayDays = (int) ($d['runway_days_effective'] ?? $defaultRunway);
-        if ($runwayDays <= 0) {
-            $runwayDays = $defaultRunway;
-        }
-        $perFingerprintDailyRate = $perFingerprintWindowLosses / $windowDays;
-        $perFingerprintTargetFits = (int) ceil($perFingerprintDailyRate * $runwayDays);
-        if ($perFingerprintTargetFits < 1 && (bool) ($d['is_pinned'] ?? false)) {
-            $perFingerprintTargetFits = 1;
-        }
-        $scored[] = [
-            'doctrine'    => $d,
-            'win_losses'  => $perFingerprintWindowLosses,
-            'daily_rate'  => $perFingerprintDailyRate,
-            'target_fits' => $perFingerprintTargetFits,
-            'runway_days' => $runwayDays,
-            'score'       => round($perFingerprintDailyRate * $runwayDays, 2),
-        ];
-    }
-    usort(
-        $scored,
-        static fn (array $a, array $b): int => ($b['score'] <=> $a['score'])
-            ?: ($b['win_losses'] <=> $a['win_losses'])
-    );
-
-    $activeDoctrines = [];
-    $activeFits = [];
-    foreach ($scored as $index => $s) {
-        $d = $s['doctrine'];
-        $hullTypeId = (int) ($d['hull_type_id'] ?? 0);
-        $hullW = $hullWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0, 'h30d' => 0];
-        $modW = $moduleWindows[$hullTypeId] ?? ['h24' => 0, 'h3d' => 0, 'h7d' => 0];
-
-        $windowLosses = $s['win_losses'];
-        $dailyRate = $s['daily_rate'];
-        $targetFits = $s['target_fits'];
-        $runwayDays = $s['runway_days'];
-        $activityScore = $s['score'];
-
-        // Stock-aware readiness: subtract how many complete fits the
-        // current alliance-structure stock can already cover from the
-        // per-fingerprint target. ``realGap`` is the number of fits
-        // we STILL need after stock is counted — that's what actually
-        // drives whether operators should be alarmed.
-        $coveredFits = (int) ($stockCoverage[(int) ($d['id'] ?? 0)]['covered'] ?? 0);
-        $realGap = max(0, $targetFits - $coveredFits);
-
-        // Activity level stays loss-driven — it's a signal about how
-        // actively the fit is being burned, independent of stock.
-        $activityLevel = match (true) {
-            $targetFits >= 10 => 'critical',
-            $targetFits >= 3  => 'elevated',
-            default            => 'low',
-        };
-
-        // Readiness / resupply tier, on the other hand, only fires
-        // when stock cannot cover the demand. Thresholds are scaled
-        // against target_fits so a proportional shortfall (roughly a
-        // third of the target) still trips the "Critical gap" label
-        // even on low-volume doctrines.
-        $criticalCut = max(3, (int) ceil($targetFits / 3));
-        if ($realGap <= 0) {
-            $readinessLabel = 'Market ready';
-            $resupplyPressure = 'Stable';
-        } elseif ($realGap >= $criticalCut) {
-            $readinessLabel = 'Critical gap';
-            $resupplyPressure = 'Urgent resupply';
-        } else {
-            $readinessLabel = 'Partial gap';
-            $resupplyPressure = 'Moderate pressure';
-        }
-
-        $row = [
-            'entity_id'          => (int) ($d['id'] ?? 0),
-            'rank_position'      => $index + 1,
-            'doctrine_name'      => (string) ($d['canonical_name'] ?? ''),
-            'activity_level'     => $activityLevel,
-            'activity_score'     => $activityScore,
-            // Score / rank deltas would need a persisted previous
-            // snapshot which the auto doctrine pipeline does not keep
-            // yet. Leaving them at 0 with a neutral movement label is
-            // honest — the template renders the values only if they
-            // change, and the label now reads "—" instead of a fake
-            // "Holding" so operators can tell the difference.
-            'score_delta'        => 0.0,
-            'rank_delta'         => 0,
-            'movement_label'     => '—',
-            'explanation'        => sprintf(
-                '%d losses for this fit in the last %dd · daily rate %.2f · target %d fits, %d covered by stock, %d still needed (runway %dd)',
-                $windowLosses,
-                $windowDays,
-                $dailyRate,
-                $targetFits,
-                $coveredFits,
-                $realGap,
-                $runwayDays
-            ),
-            // "hull_losses_*" are the hull-level windows shared across
-            // every fingerprint on the same hull. The template labels
-            // them "(hull)" so operators see that they are aggregates.
-            'hull_losses_24h'              => $hullW['h24'],
-            'hull_losses_3d'               => $hullW['h3d'],
-            'hull_losses_7d'               => $hullW['h7d'],
-            'module_losses_24h'            => $modW['h24'],
-            'module_losses_3d'             => $modW['h3d'],
-            'module_losses_7d'             => $modW['h7d'],
-            'fit_equivalent_losses_24h'    => (float) $hullW['h24'],
-            'fit_equivalent_losses_7d'     => (float) $hullW['h7d'],
-            'readiness_label'              => $readinessLabel,
-            'resupply_pressure'            => $resupplyPressure,
-            // Surface the REAL gap (after subtracting stock) instead
-            // of the raw target_fits so the "X fit gaps" text in the
-            // template agrees with the readiness label.
-            'readiness_gap_count'          => $realGap,
-            'score_components'             => [
-                sprintf('Fit losses (%dd)', $windowDays)  => (string) $windowLosses,
-                'Daily rate'                               => number_format($dailyRate, 2),
-                'Target fits'                              => (string) $targetFits,
-                'Covered by stock'                         => (string) $coveredFits,
-                'Real gap (needed)'                        => (string) $realGap,
-                'Runway (days)'                            => (string) $runwayDays,
-                'Hull total (7d)'                          => (string) $hullW['h7d'],
-            ],
-            'top_fits' => [
-                [
-                    'fit_name'       => (string) ($d['canonical_name'] ?? ''),
-                    'activity_level' => $activityLevel,
-                    'activity_score' => $activityScore,
-                ],
-            ],
-        ];
-        $activeDoctrines[] = $row;
-
-        $activeFits[] = [
-            'entity_id'        => (int) ($d['id'] ?? 0),
-            'doctrine_name'    => (string) ($d['canonical_name'] ?? ''),
-            'readiness_label'  => $readinessLabel,
-            'resupply_pressure' => $resupplyPressure,
-            'activity_score'   => $activityScore,
-            'movement_label'   => 'Holding',
-        ];
-    }
-
-    // Summary cards: keep labels stable for any dashboard consumers.
-    $summaryCards = [
-        [
-            'label'   => 'Active Doctrines',
-            'value'   => (string) count($active),
-            'context' => 'Auto-detected doctrines with fit gaps right now',
-        ],
-        [
-            'label'   => 'Fits Needing Stock',
-            'value'   => (string) count(array_filter($activeDoctrines, static fn (array $r): bool => (string) $r['resupply_pressure'] === 'Urgent resupply')),
-            'context' => 'Doctrines where alliance stock cannot cover the target fit count',
-        ],
-        [
-            'label'   => 'Total Window Losses',
-            'value'   => (string) array_sum(array_column($active, 'loss_count_window')),
-            'context' => sprintf('Killmail losses over the last %d days', (int) $settings['window_days']),
-        ],
-        [
-            'label'   => 'Runway (days)',
-            'value'   => (string) (int) $settings['default_runway_days'],
-            'context' => 'Default buy-all runway (override per doctrine)',
-        ],
-    ];
-
-    return [
-        'summary_cards'    => $summaryCards,
-        'active_doctrines' => $activeDoctrines,
-        'active_fits'      => array_slice($activeFits, 0, 25),
-        'priority_items'   => [],
-        'trend_movement'   => [
-            'doctrines_moving_up'  => [],
-            'items_newly_elevated' => [],
-            'items_cooling_down'   => [],
-        ],
-        '_freshness'       => [
-            'computed_at'      => gmdate(DATE_ATOM),
-            'freshness_state'  => 'fresh',
-            'freshness_label'  => 'Fresh',
-        ],
-    ];
-}
-
-function activity_priority_snapshot_has_computed_metrics(array $snapshot): bool
-{
-    $rows = array_values((array) ($snapshot['active_doctrines'] ?? []));
-    if ($rows === []) {
-        return true;
-    }
-
-    $row = (array) ($rows[0] ?? []);
-    $hasDoctrineIdentity = array_key_exists('entity_id', $row)
-        || array_key_exists('id', $row);
-    $hasDoctrineName = array_key_exists('doctrine_name', $row)
-        || array_key_exists('group_name', $row)
-        || array_key_exists('entity_name', $row);
-    $hasScore = array_key_exists('activity_score', $row);
-    $hasLossMetrics = array_key_exists('hull_losses_24h', $row)
-        || array_key_exists('module_losses_24h', $row)
-        || array_key_exists('fit_equivalent_losses_24h', $row);
-
-    return $hasDoctrineIdentity && $hasDoctrineName && $hasScore && $hasLossMetrics;
-}
-
-
-/**
- * Target runway in days for consumption-based buy quantity predictions.
- *
- * When an item has killmail-derived burn-rate data the planner recommends
- * enough units to cover this many days of expected consumption beyond the
- * current stock level.
- */
-
-function activity_priority_level_from_score(float $score): string
-{
-    if ($score >= 200.0) {
-        return 'highly active';
-    }
-    if ($score >= 80.0) {
-        return 'active';
-    }
-    if ($score >= 30.0) {
-        return 'moderate';
-    }
-
-    return 'low';
-}
-
-function activity_priority_item_band(float $score): string
-{
-    if ($score >= 200.0) {
-        return 'critical';
-    }
-    if ($score >= 80.0) {
-        return 'high';
-    }
-    if ($score >= 30.0) {
-        return 'elevated';
-    }
-
-    return 'watch';
-}
-
-function activity_priority_level_tone(string $level): string
-{
-    return match ($level) {
-        'highly active', 'critical' => 'border-rose-400/20 bg-rose-500/10 text-rose-100',
-        'active', 'high' => 'border-orange-400/20 bg-orange-500/10 text-orange-100',
-        'moderate', 'elevated' => 'border-amber-400/20 bg-amber-500/10 text-amber-100',
-        default => 'border-slate-400/15 bg-slate-500/10 text-slate-200',
-    };
-}
-
-function activity_priority_repeated_usage_weight(float $window24h, float $window3d, float $window7d): float
-{
-    $activeWindows = 0;
-    foreach ([$window24h, $window3d, $window7d] as $value) {
-        if ($value > 0) {
-            $activeWindows++;
-        }
-    }
-
-    $carryForward = max(0.0, $window3d - $window24h) + max(0.0, $window7d - $window3d);
-
-    return round(min(16.0, ($activeWindows * 3.5) + ($carryForward * 2.2)), 2);
-}
-
-function activity_priority_recency_weight(float $window24h, float $window3d, float $window7d): float
-{
-    if ($window24h > 0) {
-        return min(18.0, 10.0 + ($window24h * 2.2));
-    }
-    if ($window3d > 0) {
-        return min(12.0, 6.0 + ($window3d * 1.1));
-    }
-    if ($window7d > 0) {
-        return min(6.0, 2.5 + ($window7d * 0.4));
-    }
-
-    return 0.0;
-}
-
-function activity_priority_pressure_bonus(string $pressureState): float
-{
-    return match ($pressureState) {
-        'urgent_resupply' => 8.0,
-        'resupply_soon' => 6.0,
-        'elevated' => 3.0,
-        default => 0.0,
-    };
-}
-
-function activity_priority_item_history_index(array $typeIds): array
-{
-    // Legacy doctrine_local_history_index has been retired. Activity-
-    // priority views now rely on the new auto doctrine pipeline; this
-    // helper just returns the raw history rows keyed by type_id.
-    $normalizedTypeIds = array_values(array_unique(array_filter(array_map('intval', $typeIds), static fn (int $typeId): bool => $typeId > 0)));
-    if ($normalizedTypeIds === []) {
-        return [];
-    }
-    return [];
-}
-
-function activity_priority_fit_item_windows(array $items, array $itemLossByType): array
-{
-    $moduleLosses24h = 0;
-    $moduleLosses3d = 0;
-    $moduleLosses7d = 0;
-    $equivalent24h = 0.0;
-    $equivalent3d = 0.0;
-    $equivalent7d = 0.0;
-
-    foreach ($items as $item) {
-        $typeId = max(0, (int) ($item['type_id'] ?? 0));
-        $requiredQty = max(1, (int) ($item['quantity'] ?? 1));
-        if ($typeId <= 0) {
-            continue;
-        }
-
-        $loss = $itemLossByType[$typeId] ?? [];
-        $qty24h = max(0, (int) ($loss['quantity_24h'] ?? 0));
-        $qty3d = max(0, (int) ($loss['quantity_3d'] ?? 0));
-        $qty7d = max(0, (int) ($loss['quantity_7d'] ?? 0));
-
-        $moduleLosses24h += $qty24h;
-        $moduleLosses3d += $qty3d;
-        $moduleLosses7d += $qty7d;
-        $equivalent24h = max($equivalent24h, $qty24h / $requiredQty);
-        $equivalent3d = max($equivalent3d, $qty3d / $requiredQty);
-        $equivalent7d = max($equivalent7d, $qty7d / $requiredQty);
-    }
-
-    return [
-        'module_losses_24h' => $moduleLosses24h,
-        'module_losses_3d' => $moduleLosses3d,
-        'module_losses_7d' => $moduleLosses7d,
-        'fit_equivalent_losses_24h' => round($equivalent24h, 2),
-        'fit_equivalent_losses_3d' => round($equivalent3d, 2),
-        'fit_equivalent_losses_7d' => round($equivalent7d, 2),
-    ];
-}
-
-function activity_priority_doctrine_explanation(array $row): string
-{
-    $parts = [];
-    if ((int) ($row['hull_losses_24h'] ?? 0) > 0 || (int) ($row['hull_losses_7d'] ?? 0) > 0) {
-        $parts[] = doctrine_format_quantity((int) ($row['hull_losses_24h'] ?? 0)) . ' hull losses in 24h and ' . doctrine_format_quantity((int) ($row['hull_losses_7d'] ?? 0)) . ' in 7d';
-    }
-    if ((float) ($row['fit_equivalent_losses_7d'] ?? 0.0) > 0) {
-        $parts[] = number_format((float) ($row['fit_equivalent_losses_7d'] ?? 0.0), 1) . ' fit-equivalent module losses over 7d';
-    }
-    if ((int) ($row['readiness_gap_count'] ?? 0) > 0) {
-        $parts[] = doctrine_format_quantity((int) ($row['readiness_gap_count'] ?? 0)) . ' fit gaps still open locally';
-    }
-    if (((string) ($row['resupply_pressure_state'] ?? 'stable')) !== 'stable') {
-        $parts[] = 'resupply pressure is ' . strtolower((string) ($row['resupply_pressure'] ?? 'elevated'));
-    }
-
-    return ucfirst(implode(' · ', array_slice($parts, 0, 4))) . ($parts === [] ? 'No recent tracked loss pressure is pushing this doctrine higher right now.' : '.');
-}
-
-function activity_priority_item_explanation(array $row): string
-{
-    $parts = [];
-    if ((bool) ($row['is_doctrine_linked'] ?? false)) {
-        $parts[] = 'valid for ' . doctrine_format_quantity((int) ($row['valid_fits_count'] ?? $row['linked_doctrine_count'] ?? 0)) . ' fits across ' . doctrine_format_quantity((int) ($row['valid_doctrine_count'] ?? 0)) . ' doctrines';
-    }
-    if ((int) ($row['linked_active_doctrine_count'] ?? 0) > 0) {
-        $parts[] = doctrine_format_quantity((int) ($row['linked_active_doctrine_count'] ?? 0)) . ' linked doctrines are active now';
-    }
-    if ((int) ($row['deterministic_blocked_fits'] ?? 0) > 0) {
-        $parts[] = 'deterministically blocks ' . doctrine_format_quantity((int) ($row['deterministic_blocked_fits'] ?? 0)) . ' target fits';
-    } elseif ((int) ($row['exact_deficit_quantity'] ?? 0) > 0) {
-        $parts[] = 'exact doctrine deficit is ' . doctrine_format_quantity((int) ($row['exact_deficit_quantity'] ?? 0)) . ' units';
-    }
-    if ((int) ($row['recent_loss_qty_24h'] ?? 0) > 0 || (int) ($row['recent_loss_qty_7d'] ?? 0) > 0) {
-        $parts[] = doctrine_format_quantity((int) ($row['recent_loss_qty_24h'] ?? 0)) . ' units lost in 24h and ' . doctrine_format_quantity((int) ($row['recent_loss_qty_7d'] ?? 0)) . ' in 7d';
-    }
-    if ((int) ($row['local_sell_volume'] ?? 0) <= 0) {
-        $parts[] = 'no local sell stock currently listed';
-    } elseif ((string) ($row['depletion_state'] ?? 'stable') === 'draining') {
-        $parts[] = 'local stock is draining versus the prior window';
-    }
-    if ((float) ($row['activity_pressure_modifier'] ?? 1.0) > 1.05) {
-        $parts[] = 'activity modifier is ' . number_format((float) ($row['activity_pressure_modifier'] ?? 1.0), 2) . 'x for this hull family';
-    }
-
-    return ucfirst(implode(' · ', array_slice($parts, 0, 5))) . ($parts === [] ? 'Signals are steady, so the item remains on watch rather than elevated.' : '.');
-}
-
-function activity_priority_movement_label(int $rankDelta, float $scoreDelta): string
-{
-    if ($rankDelta >= 5 || $scoreDelta >= 12.0) {
-        return 'Rising fast';
-    }
-    if ($rankDelta > 0 || $scoreDelta > 4.0) {
-        return 'Moving up';
-    }
-    if ($rankDelta <= -5 || $scoreDelta <= -12.0) {
-        return 'Cooling down';
-    }
-    if ($rankDelta < 0 || $scoreDelta < -4.0) {
-        return 'Softening';
-    }
-
-    return 'Holding';
-}
-
-function activity_priority_summary_build(string $reason = 'manual'): array
-{
-    // The full per-fit activity summary used doctrine_snapshot_cache_payload(),
-    // doctrine_refresh_intelligence(), db_doctrine_fit_items_by_fit_ids(),
-    // db_doctrine_activity_snapshot_bulk_insert(), and buy_all_item_impact_map()
-    // — all of which have been retired along with the hand-maintained doctrine
-    // system. Return an empty, well-shaped summary so dependent snapshot
-    // storage still functions without the rich per-fit detail.
-    $now = gmdate(DATE_ATOM);
-    return [
-        'reason' => $reason,
-        'generated_at' => $now,
-        'fits' => [],
-        'groups' => [],
-        'items' => [],
-        'rows' => [],
-        'freshness' => [
-            'computed_at' => $now,
-            'freshness_state' => 'retired',
-            'freshness_label' => 'Legacy summary retired',
-        ],
-    ];
-}
 
 function battle_intelligence_leaderboard_data(): array
 {

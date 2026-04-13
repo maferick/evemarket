@@ -27,9 +27,7 @@ from .jobs import (
     run_compute_graph_prune,
     run_compute_graph_sync,
     run_compute_graph_sync_battle_intelligence,
-    run_compute_graph_sync_doctrine_dependency,
     run_compute_graph_topology_metrics,
-    run_compute_signals,
     run_compute_suspicion_scores,
     run_compute_suspicion_scores_v2,
     run_compute_counterintel_pipeline,
@@ -49,11 +47,9 @@ from .jobs import (
     run_current_state_refresh_sync,
     run_analytics_bucket_1h_sync,
     run_analytics_bucket_1d_sync,
-    run_activity_priority_summary_sync,
     run_dashboard_summary_sync,
     run_loss_demand_summary_sync,
     run_deal_alerts_sync,
-    run_rebuild_ai_briefings,
     run_forecasting_ai_sync,
     run_market_hub_local_history_sync,
 )
@@ -131,7 +127,6 @@ def _php_bridge(cfg: dict[str, Any]) -> PhpBridge:
 
 PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_graph_sync",
-    "compute_graph_sync_doctrine_dependency",
     "compute_graph_sync_battle_intelligence",
     "compute_graph_derived_relationships",
     "compute_graph_insights",
@@ -142,7 +137,6 @@ PYTHON_COMPUTE_PROCESSOR_JOB_KEYS: set[str] = {
     "compute_suspicion_scores_v2",
     "compute_auto_doctrines",
     "compute_auto_buyall",
-    "compute_signals",
     "compute_battle_rollups",
     "compute_battle_target_metrics",
     "compute_battle_anomalies",
@@ -215,11 +209,9 @@ PYTHON_SYNC_PROCESSOR_JOB_KEYS: set[str] = {
     "current_state_refresh_sync",
     "analytics_bucket_1h_sync",
     "analytics_bucket_1d_sync",
-    "activity_priority_summary_sync",
     "dashboard_summary_sync",
     "loss_demand_summary_sync",
     "deal_alerts_sync",
-    "rebuild_ai_briefings",
     "forecasting_ai_sync",
     "market_comparison_summary_sync",
     "market_hub_local_history_sync",
@@ -244,7 +236,6 @@ PYTHON_PROCESSOR_JOB_KEYS: set[str] = PYTHON_COMPUTE_PROCESSOR_JOB_KEYS | PYTHON
 _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Graph pipeline jobs — (callable, arg_factory)
     "compute_graph_sync": (run_compute_graph_sync, lambda db, cfg: (db, neo4j_runtime(cfg))),
-    "compute_graph_sync_doctrine_dependency": (run_compute_graph_sync_doctrine_dependency, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_sync_battle_intelligence": (run_compute_graph_sync_battle_intelligence, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_derived_relationships": (run_compute_graph_derived_relationships, lambda db, cfg: (db, neo4j_runtime(cfg))),
     "compute_graph_insights": (run_compute_graph_insights, lambda db, cfg: (db, neo4j_runtime(cfg), influx_runtime(cfg))),
@@ -282,7 +273,6 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     # Market / supply intelligence jobs
     "compute_auto_doctrines": (run_compute_auto_doctrines, lambda db, cfg: (db,)),
     "compute_auto_buyall": (run_compute_auto_buyall, lambda db, cfg: (db,)),
-    "compute_signals": (run_compute_signals, lambda db, cfg: (db, influx_runtime(cfg))),
     "compute_economic_warfare": (run_compute_economic_warfare, lambda db, cfg: (db, influx_runtime(cfg))),
     # Sync phase jobs
     "market_hub_current_sync": (run_market_hub_current_sync, lambda db, cfg: (db, cfg)),
@@ -292,11 +282,9 @@ _PROCESSOR_DISPATCH: dict[str, tuple] = {
     "current_state_refresh_sync": (run_current_state_refresh_sync, lambda db, cfg: (db,)),
     "analytics_bucket_1h_sync": (run_analytics_bucket_1h_sync, lambda db, cfg: (db,)),
     "analytics_bucket_1d_sync": (run_analytics_bucket_1d_sync, lambda db, cfg: (db,)),
-    "activity_priority_summary_sync": (run_activity_priority_summary_sync, lambda db, cfg: (db,)),
     "dashboard_summary_sync": (run_dashboard_summary_sync, lambda db, cfg: (db,)),
     "loss_demand_summary_sync": (run_loss_demand_summary_sync, lambda db, cfg: (db,)),
     "deal_alerts_sync": (run_deal_alerts_sync, lambda db, cfg: (db,)),
-    "rebuild_ai_briefings": (run_rebuild_ai_briefings, lambda db, cfg: (db,)),
     "forecasting_ai_sync": (run_forecasting_ai_sync, lambda db, cfg: (db,)),
     "market_comparison_summary_sync": (run_market_comparison_summary_sync, lambda db, cfg: (db,)),
     "market_hub_local_history_sync": (run_market_hub_local_history_sync, lambda db, cfg: (db,)),

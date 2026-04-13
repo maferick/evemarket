@@ -7,7 +7,6 @@ from typing import Any
 from unittest.mock import patch
 
 from orchestrator.esi_market_adapter import EsiOrdersResponse
-from orchestrator.jobs.activity_priority_summary_sync import run_activity_priority_summary_sync
 from orchestrator.jobs.alliance_current_sync import run_alliance_current_sync
 from orchestrator.jobs.alliance_historical_sync import run_alliance_historical_sync
 from orchestrator.jobs.analytics_bucket_1d_sync import run_analytics_bucket_1d_sync
@@ -20,7 +19,6 @@ from orchestrator.jobs.forecasting_ai_sync import run_forecasting_ai_sync
 from orchestrator.jobs.loss_demand_summary_sync import run_loss_demand_summary_sync
 from orchestrator.jobs.market_hub_current_sync import run_market_hub_current_sync
 from orchestrator.jobs.market_hub_historical_sync import run_market_hub_historical_sync
-from orchestrator.jobs.rebuild_ai_briefings import run_rebuild_ai_briefings
 
 
 class _SpyDb:
@@ -105,13 +103,11 @@ class SyncProcessorCoverageTests(unittest.TestCase):
             (run_current_state_refresh_sync, [4], [4], 1, "upsert_intelligence_snapshot", 4, 4),
             (run_analytics_bucket_1h_sync, [6], [3, 2], 0, None, 6, 5),
             (run_analytics_bucket_1d_sync, [7], [4, 1], 0, None, 7, 5),
-            (run_activity_priority_summary_sync, [8], [5], 0, None, 8, 5),
             (run_deal_alerts_sync, [10], [6], 0, None, 10, 6),
             (run_doctrine_intelligence_sync, [9], [4, 3], 0, None, 9, 7),
             (run_dashboard_summary_sync, [2, 11], [], 1, "upsert_intelligence_snapshot", 20, 1),
             (run_loss_demand_summary_sync, [], [], 1, "upsert_intelligence_snapshot", 2, 1),
             (run_forecasting_ai_sync, [], [], 1, "upsert_intelligence_snapshot", 3, 1),
-            (run_rebuild_ai_briefings, [5], [4], 1, "upsert_intelligence_snapshot", 5, 4),
         ]
 
         for runner, scalar_values, execute_values, snapshot_writes, write_api, expected_processed, expected_written in jobs:
