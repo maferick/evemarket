@@ -423,8 +423,13 @@ def run_compute_cohort_baselines(
     # ── Step 6: Sync cohort data to Neo4j ─────────────────────────────────
     neo4j_rows_synced = 0
     if neo4j:
-        NEO4J_BATCH = 500
-        NEO4J_TIMEOUT = 60
+        # Server-side batch size for CALL { ... } IN TRANSACTIONS — keeps each
+        # inner transaction well under the per-transaction memory cap (Neo4j's
+        # db.memory.transaction.max).  Prior implementation used large
+        # UNWIND-only batches which triggered MemoryPoolOutOfMemoryError on the
+        # stale-relationship DELETE sweep.
+        NEO4J_BATCH = 200
+        NEO4J_TIMEOUT = 120
 
         # 6a. Create/update Cohort nodes with baseline statistics.
         cohort_node_rows: list[dict[str, Any]] = []
@@ -458,9 +463,17 @@ def run_compute_cohort_baselines(
                     "computed_at": computed_at,
                 })
         if membership_neo4j_rows:
-            # Clear stale relationships first.
+            # Clear stale relationships first.  Use CALL { … } IN TRANSACTIONS
+            # so the delete set is committed in small batches — a single
+            # transaction cannot hold every stale rel when the graph has
+            # hundreds of thousands of characters (exceeds
+            # db.memory.transaction.max).
             neo4j.query(
-                "MATCH (:Character)-[r:BELONGS_TO_COHORT]->(:Cohort) WHERE r.computed_at <> $computed_at DELETE r",
+                """
+                MATCH (:Character)-[r:BELONGS_TO_COHORT]->(:Cohort)
+                WHERE r.computed_at <> $computed_at
+                CALL { WITH r DELETE r } IN TRANSACTIONS OF 5000 ROWS
+                """,
                 {"computed_at": computed_at},
                 timeout_seconds=NEO4J_TIMEOUT,
             )
@@ -468,10 +481,13 @@ def run_compute_cohort_baselines(
                 neo4j.query(
                     """
                     UNWIND $rows AS row
-                    MERGE (c:Character {character_id: row.character_id})
-                    MERGE (co:Cohort {cohort_key: row.cohort_key})
-                    MERGE (c)-[r:BELONGS_TO_COHORT]->(co)
-                    SET r.computed_at = row.computed_at
+                    CALL {
+                        WITH row
+                        MERGE (c:Character {character_id: row.character_id})
+                        MERGE (co:Cohort {cohort_key: row.cohort_key})
+                        MERGE (c)-[r:BELONGS_TO_COHORT]->(co)
+                        SET r.computed_at = row.computed_at
+                    } IN TRANSACTIONS OF 500 ROWS
                     """,
                     {"rows": membership_neo4j_rows[i:i + NEO4J_BATCH]},
                     timeout_seconds=NEO4J_TIMEOUT,
@@ -497,11 +513,14 @@ def run_compute_cohort_baselines(
                 neo4j.query(
                     """
                     UNWIND $rows AS row
-                    MATCH (c:Character {character_id: row.character_id})
-                    SET c.cohort_z_score = toFloat(row.cohort_z_score),
-                        c.cohort_mad_deviation = toFloat(row.cohort_mad_deviation),
-                        c.cohort_percentile = toFloat(row.cohort_percentile),
-                        c.primary_cohort = row.primary_cohort
+                    CALL {
+                        WITH row
+                        MATCH (c:Character {character_id: row.character_id})
+                        SET c.cohort_z_score = toFloat(row.cohort_z_score),
+                            c.cohort_mad_deviation = toFloat(row.cohort_mad_deviation),
+                            c.cohort_percentile = toFloat(row.cohort_percentile),
+                            c.primary_cohort = row.primary_cohort
+                    } IN TRANSACTIONS OF 500 ROWS
                     """,
                     {"rows": score_neo4j_rows[i:i + NEO4J_BATCH]},
                     timeout_seconds=NEO4J_TIMEOUT,
