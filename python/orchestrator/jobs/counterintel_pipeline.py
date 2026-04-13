@@ -502,6 +502,41 @@ def run_compute_counterintel_pipeline(
         last_battle_id = cursor
         assignment_mismatch_count = 0
         assignment_mismatch_samples: list[dict[str, Any]] = []
+
+        # Eligibility diagnostics.  Without these, a successful run that
+        # processes 0 battles is indistinguishable from a healthy run that
+        # simply has nothing new since the last cursor.  The three counts
+        # answer three distinct ops questions: "how many battles would EVER
+        # be eligible?", "how many are new since my cursor?", and "how many
+        # have I already consumed?".
+        eligibility_diagnostics: dict[str, Any] = {
+            "min_participants": 20,
+            "cursor_position": cursor or None,
+        }
+        if not is_scoped:
+            try:
+                total_eligible = db.fetch_scalar(
+                    """
+                    SELECT COUNT(*) FROM battle_rollups
+                    WHERE eligible_for_suspicion = 1 AND participant_count >= 20
+                    """
+                )
+                new_eligible = db.fetch_scalar(
+                    """
+                    SELECT COUNT(*) FROM battle_rollups
+                    WHERE eligible_for_suspicion = 1 AND participant_count >= 20
+                      AND battle_id > %s
+                    """,
+                    (cursor,),
+                )
+                eligibility_diagnostics.update({
+                    "total_eligible_battles": int(total_eligible or 0),
+                    "new_eligible_since_cursor": int(new_eligible or 0),
+                    "already_consumed": max(0, int(total_eligible or 0) - int(new_eligible or 0)),
+                })
+            except Exception as exc:  # pragma: no cover — diagnostics must never fail the run
+                eligibility_diagnostics["diagnostics_error"] = str(exc)
+
         while batch_count < max_batches:
             if is_scoped:
                 # On-demand single-character path: only eligible battles this
@@ -1220,11 +1255,28 @@ def run_compute_counterintel_pipeline(
         has_more = (batch_count == max_batches) and not is_scoped
 
         duration_ms = int((time.perf_counter() - started) * 1000)
-        summary = (
-            f"Processed {processed_battles} eligible 100+ participant battles across {batch_count} batches."
-            if not is_scoped
-            else f"On-demand scoped run for character {scope_character_id}: {processed_battles} battles processed."
-        )
+        # Build a summary that reports both what ran THIS invocation and,
+        # for unscoped runs, how much is pending/consumed in total.  The
+        # old summary claimed "100+ participant" but the filter is ≥20 —
+        # correct that too.
+        if is_scoped:
+            summary = (
+                f"On-demand scoped run for character {scope_character_id}: "
+                f"{processed_battles} battles processed."
+            )
+        else:
+            total_eligible = eligibility_diagnostics.get("total_eligible_battles")
+            new_eligible = eligibility_diagnostics.get("new_eligible_since_cursor")
+            pending_note = ""
+            if total_eligible is not None and new_eligible is not None:
+                pending_note = (
+                    f" ({new_eligible} new of {total_eligible} eligible, "
+                    f"cursor has consumed {max(0, total_eligible - new_eligible)})"
+                )
+            summary = (
+                f"Processed {processed_battles} eligible battles (≥20 participants) "
+                f"across {batch_count} batches{pending_note}."
+            )
         result = JobResult.success(
             job_key=lock_key,
             summary=summary,
@@ -1244,6 +1296,7 @@ def run_compute_counterintel_pipeline(
                     "mismatch_count": assignment_mismatch_count,
                     "sample_rows": assignment_mismatch_samples,
                 },
+                "eligibility": eligibility_diagnostics,
             },
         ).to_dict()
         finish_job_run(db, job, status="success", rows_processed=rows_processed, rows_written=rows_written, meta=result)

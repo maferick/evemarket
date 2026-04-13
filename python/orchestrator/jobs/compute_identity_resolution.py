@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 import uuid
@@ -25,6 +26,8 @@ from ..db import SupplyCoreDb
 from ..job_result import JobResult
 from ..job_utils import finish_job_run, start_job_run
 from ..json_utils import json_dumps_safe
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tunables
@@ -326,6 +329,17 @@ def run_compute_identity_resolution(
 
         # ── 3. Score each pair ───────────────────────────────────────
         link_rows: list[tuple[Any, ...]] = []
+        # Diagnostics: track cache hit rates and per-component score sums so
+        # operators can see which cache is empty / which component is dragging
+        # the total score below the emit threshold.  Without these, a run that
+        # scores 50k pairs but emits 0 links looks identical to a run with
+        # genuinely low-similarity data.
+        all_scores: list[float] = []
+        component_sums = {"org_history": 0.0, "copresence": 0.0, "temporal": 0.0,
+                          "cross_side": 0.0, "behavior_sim": 0.0, "embedding_sim": 0.0}
+        component_nonzero = {k: 0 for k in component_sums}
+        near_miss_count = 0  # pairs scoring [threshold - 0.10, threshold)
+        zero_score_pairs = 0
         for (a, b), ctx in candidates.items():
             rows_processed += 1
             org = _score_org_history(a, b, org_cache)
@@ -335,6 +349,19 @@ def run_compute_identity_resolution(
             bsm = _score_behavior_sim(a, b, snapshot_cache)
             esm = _score_embedding_sim(ctx)
 
+            component_sums["org_history"] += org
+            component_sums["copresence"] += cop
+            component_sums["temporal"] += tmp
+            component_sums["cross_side"] += xsd
+            component_sums["behavior_sim"] += bsm
+            component_sums["embedding_sim"] += esm
+            if org > 0: component_nonzero["org_history"] += 1
+            if cop > 0: component_nonzero["copresence"] += 1
+            if tmp > 0: component_nonzero["temporal"] += 1
+            if xsd > 0: component_nonzero["cross_side"] += 1
+            if bsm > 0: component_nonzero["behavior_sim"] += 1
+            if esm > 0: component_nonzero["embedding_sim"] += 1
+
             link_score = (
                 WEIGHTS["org_history"] * org
                 + WEIGHTS["copresence"] * cop
@@ -343,6 +370,11 @@ def run_compute_identity_resolution(
                 + WEIGHTS["behavior_sim"] * bsm
                 + WEIGHTS["embedding_sim"] * esm
             )
+            all_scores.append(link_score)
+            if link_score == 0.0:
+                zero_score_pairs += 1
+            elif link_score >= LINK_EMIT_THRESHOLD - 0.10 and link_score < LINK_EMIT_THRESHOLD:
+                near_miss_count += 1
             if link_score < LINK_EMIT_THRESHOLD:
                 continue
 
@@ -459,17 +491,52 @@ def run_compute_identity_resolution(
             clusters_written += 1
 
         # ── 6. Finalize ──────────────────────────────────────────────
-        score_vals = [float(r[2]) for r in link_rows]
-        score_dist = {}
-        if score_vals:
-            s = sorted(score_vals)
+        # Score distribution over ALL candidate pairs (not just emitted
+        # links).  When no pair crosses the emit threshold, this is the
+        # only way to see whether scores were uniformly low or just below
+        # the cut.
+        score_dist: dict[str, Any] = {}
+        if all_scores:
+            s = sorted(all_scores)
             score_dist = {
+                "candidate_count": len(all_scores),
                 "p50": round(s[len(s) // 2], 4),
                 "p90": round(s[int(len(s) * 0.9)], 4),
                 "p99": round(s[int(len(s) * 0.99)], 4),
                 "min": round(s[0], 4),
                 "max": round(s[-1], 4),
+                "zero_score_pairs": zero_score_pairs,
+                "near_miss_count": near_miss_count,
+                "emit_threshold": LINK_EMIT_THRESHOLD,
             }
+
+        # Per-component diagnostics: mean contribution + how many pairs had
+        # a non-zero signal for each component.  A component with 0% non-zero
+        # almost certainly means its cache table is empty.
+        denom = max(1, len(all_scores))
+        component_means = {k: round(v / denom, 4) for k, v in component_sums.items()}
+        component_hit_rates = {k: round(component_nonzero[k] / denom, 4) for k in component_nonzero}
+
+        # Cache coverage over the deduplicated character list.  char_list is
+        # the set of character IDs that appear in at least one candidate pair.
+        char_count = max(1, len(char_list))
+        cache_coverage = {
+            "char_pool_size": len(char_list),
+            "org_history_hit_rate": round(len(org_cache) / char_count, 4),
+            "temporal_hit_rate": round(len(temporal_cache) / char_count, 4),
+            "snapshot_hit_rate": round(len(snapshot_cache) / char_count, 4),
+            "typed_pair_count": len(typed_cache),
+        }
+
+        logger.info(
+            "identity-resolution scoring: candidates=%d links=%d clusters=%d "
+            "score_p50=%s score_p99=%s zero_pairs=%d near_miss=%d "
+            "cache_hits=%s component_hit_rates=%s",
+            len(candidates), rows_written, clusters_written,
+            score_dist.get("p50"), score_dist.get("p99"),
+            zero_score_pairs, near_miss_count,
+            cache_coverage, component_hit_rates,
+        )
 
         _finish_run(db, run_id, "success", len(candidates), rows_written, clusters_written,
                      score_dist=score_dist)
@@ -482,7 +549,10 @@ def run_compute_identity_resolution(
             duration_ms=duration_ms,
             meta={"run_id": run_id, "candidate_pairs": len(candidates),
                   "links_written": rows_written, "clusters_written": clusters_written,
-                  "score_distribution": score_dist},
+                  "score_distribution": score_dist,
+                  "component_means": component_means,
+                  "component_hit_rates": component_hit_rates,
+                  "cache_coverage": cache_coverage},
         ).to_dict()
         finish_job_run(db, job, status="success", rows_processed=rows_processed,
                        rows_written=rows_written, meta=result)
