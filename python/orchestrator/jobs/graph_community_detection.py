@@ -47,6 +47,12 @@ def _ensure_gds_projection(client: Neo4jClient) -> bool:
 
     Only includes relationship types that actually exist in the database to
     avoid GDS ``IllegalArgumentException`` when some types are absent.
+
+    Projects a ``weight`` property on every relationship (``defaultValue: 1.0``)
+    so downstream algorithms can run weighted — without the property,
+    Leiden/Louvain/PageRank silently treat every edge as equal, which
+    produces fragmented (overly-sparse) community assignments when some
+    edge types (e.g. CO_OCCURS_WITH) carry meaningful counts.
     """
     try:
         try:
@@ -68,8 +74,18 @@ def _ensure_gds_projection(client: Neo4jClient) -> bool:
             logger.warning("GDS projection skipped: no community relationship types exist")
             return False
 
+        # Native projection spec: each rel type declares its orientation
+        # and a weight property that defaults to 1.0 when the underlying
+        # edge has no numeric weight/count.  The default keeps the
+        # projection dense even for rel types that don't carry weights.
         rel_projection = ", ".join(
-            f"{rt}: {{orientation: 'UNDIRECTED'}}" for rt in present_types
+            (
+                f"{rt}: {{"
+                "orientation: 'UNDIRECTED', "
+                "properties: {weight: {property: 'weight', defaultValue: 1.0}}"
+                "}"
+            )
+            for rt in present_types
         )
         client.query(
             f"""
@@ -81,6 +97,28 @@ def _ensure_gds_projection(client: Neo4jClient) -> bool:
             """,
             timeout_seconds=120,
         )
+
+        # Diagnostics: surface the projection shape so operators can see
+        # whether sparsity is coming from a genuinely disconnected graph
+        # or from over-filtered edges.
+        try:
+            stats = client.query(
+                f"""
+                CALL gds.graph.list('{GDS_GRAPH_NAME}')
+                YIELD nodeCount, relationshipCount
+                RETURN nodeCount, relationshipCount
+                """
+            )
+            if stats:
+                logger.info(
+                    "GDS projection '%s' built: %s nodes, %s relationships (types=%s)",
+                    GDS_GRAPH_NAME,
+                    stats[0].get("nodeCount"),
+                    stats[0].get("relationshipCount"),
+                    ",".join(present_types),
+                )
+        except Exception:
+            pass
         return True
     except Exception as exc:
         logger.warning("GDS projection failed for community detection: %s", exc)
@@ -113,12 +151,15 @@ def _gds_community_detection(client: Neo4jClient) -> str:
 
     Returns the name of the algorithm that actually wrote the property.
     """
-    # Leiden — preferred when available
+    # Leiden — preferred when available.  ``relationshipWeightProperty``
+    # is what enables weighted modularity; without it the projection's
+    # ``weight`` values are ignored and singleton-heavy partitions result.
     try:
         client.query(
             f"""
             CALL gds.leiden.write('{GDS_GRAPH_NAME}', {{
                 writeProperty: 'community_label',
+                relationshipWeightProperty: 'weight',
                 maxLevels: 10,
                 gamma: 1.0,
                 theta: 0.01
@@ -135,7 +176,8 @@ def _gds_community_detection(client: Neo4jClient) -> str:
         client.query(
             f"""
             CALL gds.louvain.write('{GDS_GRAPH_NAME}', {{
-                writeProperty: 'community_label'
+                writeProperty: 'community_label',
+                relationshipWeightProperty: 'weight'
             }})
             """,
             timeout_seconds=180,
@@ -149,6 +191,7 @@ def _gds_community_detection(client: Neo4jClient) -> str:
         f"""
         CALL gds.labelPropagation.write('{GDS_GRAPH_NAME}', {{
             writeProperty: 'community_label',
+            relationshipWeightProperty: 'weight',
             maxIterations: {LABEL_PROPAGATION_ROUNDS}
         }})
         """,
@@ -169,6 +212,7 @@ def _gds_pagerank(client: Neo4jClient) -> None:
         f"""
         CALL gds.pageRank.write('{GDS_GRAPH_NAME}', {{
             writeProperty: 'pr',
+            relationshipWeightProperty: 'weight',
             maxIterations: {GDS_PAGERANK_MAX_ITERATIONS},
             tolerance: {GDS_PAGERANK_TOLERANCE},
             dampingFactor: 0.85
@@ -445,10 +489,31 @@ def run_graph_community_detection_sync(db: SupplyCoreDb, neo4j_raw: dict[str, An
         "SELECT COUNT(*) FROM graph_community_assignments WHERE is_bridge = 1"
     )
 
+    # Sparsity diagnostics: how many communities are effectively singletons
+    # (1 member) and how large is the biggest one.  When ``singleton_ratio``
+    # stays high after enabling weighted algorithms, the graph itself is
+    # disconnected rather than the detection being broken.
+    singleton_communities = db.fetch_scalar(
+        "SELECT COUNT(*) FROM ("
+        "  SELECT community_id FROM graph_community_assignments"
+        "  GROUP BY community_id HAVING COUNT(*) = 1"
+        ") s"
+    )
+    largest_community_size = db.fetch_scalar(
+        "SELECT MAX(community_size) FROM graph_community_assignments"
+    )
+
+    singletons = int(singleton_communities or 0)
+    distinct_comms = int(community_count_row or 0)
+    singleton_ratio = (singletons / distinct_comms) if distinct_comms > 0 else 0.0
+
     snapshot_payload = {
         "total_characters": rows_written,
-        "distinct_communities": int(community_count_row or 0),
+        "distinct_communities": distinct_comms,
         "bridge_characters": int(bridge_count or 0),
+        "singleton_communities": singletons,
+        "singleton_ratio": round(singleton_ratio, 4),
+        "largest_community_size": int(largest_community_size or 0),
         "label_propagation_rounds": LABEL_PROPAGATION_ROUNDS,
         "pagerank_iterations": (
             GDS_PAGERANK_MAX_ITERATIONS if analytics_path == "gds" else PAGERANK_ITERATIONS

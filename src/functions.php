@@ -462,6 +462,12 @@ function nav_groups(): array
                         ['label' => 'CIP Admin', 'path' => '/intelligence-events/admin.php'],
                     ],
                 ],
+                [
+                    'label' => 'Spy Detection',
+                    'path' => '/spy-detection',
+                    'icon' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-4 w-4" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 2a4 4 0 0 0-4 4v2H4l1 12h14l1-12h-4V6a4 4 0 0 0-4-4Z"/><circle cx="12" cy="14" r="2"/></svg>',
+                    'children' => [],
+                ],
             ],
         ],
         [

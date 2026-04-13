@@ -20629,3 +20629,215 @@ function db_cip_operational_health(): array
         'suppress_stats' => $suppressStats,
     ];
 }
+
+// ---------------------------------------------------------------------------
+// Spy detection — cases, risk profiles, identity links
+// ---------------------------------------------------------------------------
+
+function db_spy_network_cases_recent(int $limit = 50, ?string $severity = null, ?string $status = null): array
+{
+    $safeLimit = max(1, min(200, $limit));
+    $conditions = [];
+    $params = [];
+    if ($severity !== null && in_array($severity, ['monitor', 'medium', 'high', 'critical'], true)) {
+        $conditions[] = 'severity_tier = ?';
+        $params[] = $severity;
+    }
+    if ($status !== null && in_array($status, ['open', 'reviewing', 'closed', 'reopened'], true)) {
+        $conditions[] = 'status = ?';
+        $params[] = $status;
+    }
+    $where = $conditions === [] ? '' : ('WHERE ' . implode(' AND ', $conditions));
+    return db_select(
+        'SELECT case_id, community_id, community_source, ring_score, confidence_score,
+                severity_tier, member_count, suspicious_member_ratio, bridge_concentration,
+                hostile_overlap_density, recurrence_stability, identity_density,
+                status, first_detected_at, last_reinforced_at, computed_at
+         FROM spy_network_cases ' . $where . '
+         ORDER BY ring_score DESC, last_reinforced_at DESC
+         LIMIT ' . $safeLimit,
+        $params
+    );
+}
+
+function db_spy_network_case_detail(int $caseId): ?array
+{
+    if ($caseId <= 0) {
+        return null;
+    }
+    return db_select_one(
+        'SELECT case_id, community_id, community_source, identity_cluster_id,
+                ring_score, confidence_score, severity_tier, member_count,
+                suspicious_member_ratio, bridge_concentration, recent_growth_score,
+                hostile_overlap_density, recurrence_stability, identity_density,
+                feature_breakdown_json, status, status_changed_at,
+                first_detected_at, last_reinforced_at, model_version,
+                computed_at, source_run_id
+         FROM spy_network_cases
+         WHERE case_id = ?',
+        [$caseId]
+    );
+}
+
+function db_spy_network_case_members(int $caseId, int $limit = 200): array
+{
+    if ($caseId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(500, $limit));
+    return db_select(
+        'SELECT sncm.character_id, sncm.member_contribution_score, sncm.role_label,
+                sncm.evidence_json, sncm.computed_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", sncm.character_id)) AS character_name
+         FROM spy_network_case_members sncm
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = "character" AND emc.entity_id = sncm.character_id
+         WHERE sncm.case_id = ?
+         ORDER BY sncm.member_contribution_score DESC
+         LIMIT ' . $safeLimit,
+        [$caseId]
+    );
+}
+
+function db_spy_network_case_edges(int $caseId, int $limit = 200): array
+{
+    if ($caseId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(500, $limit));
+    return db_select(
+        'SELECT character_id_a, character_id_b, edge_type, edge_weight,
+                component_weights_json, evidence_json, computed_at
+         FROM spy_network_case_edges
+         WHERE case_id = ?
+         ORDER BY edge_weight DESC
+         LIMIT ' . $safeLimit,
+        [$caseId]
+    );
+}
+
+function db_character_spy_risk_profile(int $characterId): ?array
+{
+    if ($characterId <= 0) {
+        return null;
+    }
+    return db_select_one(
+        'SELECT character_id, spy_risk_score, risk_percentile, confidence_score,
+                confidence_tier, severity_tier,
+                bridge_infiltration_score, pre_op_infiltration_score, hostile_overlap_score,
+                temporal_coordination_score, identity_association_score, ring_context_score,
+                behavioral_anomaly_score, org_movement_score, predicted_hostile_link_score,
+                top_case_id, explanation_json, component_weights_json,
+                model_version, computed_at, source_run_id
+         FROM character_spy_risk_profiles
+         WHERE character_id = ?',
+        [$characterId]
+    );
+}
+
+function db_character_spy_risk_evidence(int $characterId, int $limit = 50): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT evidence_key, window_label, evidence_value, expected_value, deviation_value,
+                z_score, cohort_percentile, confidence_flag, contribution_to_score,
+                evidence_text, computed_at
+         FROM character_spy_risk_evidence
+         WHERE character_id = ?
+         ORDER BY contribution_to_score DESC, evidence_key ASC
+         LIMIT ' . $safeLimit,
+        [$characterId]
+    );
+}
+
+function db_character_spy_risk_top(int $limit = 50, ?string $severity = null): array
+{
+    $safeLimit = max(1, min(200, $limit));
+    $conditions = [];
+    $params = [];
+    if ($severity !== null && in_array($severity, ['monitor', 'medium', 'high', 'critical'], true)) {
+        $conditions[] = 'csrp.severity_tier = ?';
+        $params[] = $severity;
+    }
+    $where = $conditions === [] ? '' : ('WHERE ' . implode(' AND ', $conditions));
+    return db_select(
+        'SELECT csrp.character_id, csrp.spy_risk_score, csrp.risk_percentile,
+                csrp.confidence_score, csrp.confidence_tier, csrp.severity_tier,
+                csrp.top_case_id, csrp.computed_at,
+                COALESCE(emc.entity_name, CONCAT("Character #", csrp.character_id)) AS character_name
+         FROM character_spy_risk_profiles csrp
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = "character" AND emc.entity_id = csrp.character_id
+         ' . $where . '
+         ORDER BY csrp.spy_risk_score DESC
+         LIMIT ' . $safeLimit,
+        $params
+    );
+}
+
+function db_character_identity_links(int $characterId, int $limit = 25): array
+{
+    if ($characterId <= 0) {
+        return [];
+    }
+    $safeLimit = max(1, min(200, $limit));
+    return db_select(
+        'SELECT cil.link_id, cil.character_id_a, cil.character_id_b, cil.link_score,
+                cil.confidence_tier, cil.window_label,
+                cil.org_history_score, cil.copresence_score, cil.temporal_score,
+                cil.cross_side_score, cil.behavior_sim_score, cil.embedding_sim_score,
+                cil.computed_at,
+                CASE WHEN cil.character_id_a = ? THEN cil.character_id_b ELSE cil.character_id_a END AS other_character_id,
+                COALESCE(emc.entity_name,
+                    CONCAT("Character #", CASE WHEN cil.character_id_a = ? THEN cil.character_id_b ELSE cil.character_id_a END))
+                    AS other_character_name
+         FROM character_identity_links cil
+         LEFT JOIN entity_metadata_cache emc
+             ON emc.entity_type = "character"
+             AND emc.entity_id = CASE WHEN cil.character_id_a = ? THEN cil.character_id_b ELSE cil.character_id_a END
+         WHERE cil.character_id_a = ? OR cil.character_id_b = ?
+         ORDER BY cil.link_score DESC
+         LIMIT ' . $safeLimit,
+        [$characterId, $characterId, $characterId, $characterId, $characterId]
+    );
+}
+
+function db_spy_detection_summary(): array
+{
+    $caseCounts = db_select_one(
+        "SELECT COUNT(*) AS total,
+                SUM(CASE WHEN severity_tier = 'critical' THEN 1 ELSE 0 END) AS critical,
+                SUM(CASE WHEN severity_tier = 'high' THEN 1 ELSE 0 END) AS high,
+                SUM(CASE WHEN severity_tier = 'medium' THEN 1 ELSE 0 END) AS medium,
+                SUM(CASE WHEN severity_tier = 'monitor' THEN 1 ELSE 0 END) AS monitor,
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_cases,
+                SUM(CASE WHEN status = 'reviewing' THEN 1 ELSE 0 END) AS reviewing_cases,
+                MAX(last_reinforced_at) AS last_reinforced_at
+         FROM spy_network_cases"
+    );
+
+    $riskCounts = db_select_one(
+        "SELECT COUNT(*) AS total_profiles,
+                SUM(CASE WHEN severity_tier = 'critical' THEN 1 ELSE 0 END) AS critical_profiles,
+                SUM(CASE WHEN severity_tier = 'high' THEN 1 ELSE 0 END) AS high_profiles,
+                SUM(CASE WHEN confidence_tier = 'high' THEN 1 ELSE 0 END) AS high_confidence,
+                MAX(computed_at) AS last_computed_at
+         FROM character_spy_risk_profiles"
+    );
+
+    $identityCounts = db_select_one(
+        "SELECT COUNT(*) AS total_links,
+                SUM(CASE WHEN confidence_tier = 'high' THEN 1 ELSE 0 END) AS high_confidence,
+                MAX(computed_at) AS last_computed_at
+         FROM character_identity_links"
+    );
+
+    return [
+        'cases' => $caseCounts ?: [],
+        'risk_profiles' => $riskCounts ?: [],
+        'identity_links' => $identityCounts ?: [],
+    ];
+}
