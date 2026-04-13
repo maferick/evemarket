@@ -31,6 +31,13 @@ else:
 
 SUSPICION_THRESHOLD = 0.5
 BATCH_SIZE = 500
+# Match theater_clustering's auto-lock window: theaters whose end_time is
+# older than (now - lookback_hours) have been auto-locked and their battle
+# membership won't change. Their participant suspicion is still technically
+# time-varying (character_suspicion_signals updates as new evidence lands),
+# but recomputing for every historical theater on every run was the long
+# pole on compute-battle. Default mirrors theater_clustering — 48 h.
+DEFAULT_LOOKBACK_HOURS = 48
 
 
 def _now_sql() -> str:
@@ -48,8 +55,29 @@ def _theater_log(runtime: dict[str, Any] | None, event: str, payload: dict[str, 
         handle.write(json_dumps_safe(record) + "\n")
 
 
-def _load_theaters(db: SupplyCoreDb) -> list[dict[str, Any]]:
-    return db.fetch_all("SELECT theater_id FROM theaters ORDER BY start_time ASC")
+def _load_theaters(db: SupplyCoreDb, lookback_hours: int = DEFAULT_LOOKBACK_HOURS) -> list[dict[str, Any]]:
+    """Load active (unlocked) theaters within the lookback window.
+
+    theater_clustering auto-locks theaters whose end_time is outside its
+    lookback window; those rows won't have their battle membership change
+    again and don't need their suspicion summaries recomputed on every tick.
+    ``lookback_hours <= 0`` falls back to scanning every theater for
+    backfill / ops workflows.
+    """
+    if lookback_hours <= 0:
+        return db.fetch_all(
+            "SELECT theater_id FROM theaters WHERE locked_at IS NULL ORDER BY start_time ASC"
+        )
+    return db.fetch_all(
+        """
+        SELECT theater_id
+        FROM theaters
+        WHERE locked_at IS NULL
+          AND end_time >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL %s HOUR)
+        ORDER BY start_time ASC
+        """,
+        (int(lookback_hours),),
+    )
 
 
 def _load_theater_participants(db: SupplyCoreDb, theater_id: str) -> list[dict[str, Any]]:
@@ -142,10 +170,19 @@ def run_theater_suspicion(
     rows_processed = 0
     rows_written = 0
     computed_at = _now_sql()
-    _theater_log(runtime, "theater_suspicion.job.started", {"dry_run": dry_run})
+    # Share the lookback knob with theater_clustering so both phases agree on
+    # which theaters are "live". Operators can override via app_settings.
+    try:
+        lookback_setting = db.fetch_app_setting(
+            "theater_clustering_lookback_hours", str(DEFAULT_LOOKBACK_HOURS)
+        )
+        lookback_hours = int(lookback_setting) if lookback_setting is not None else DEFAULT_LOOKBACK_HOURS
+    except Exception:
+        lookback_hours = DEFAULT_LOOKBACK_HOURS
+    _theater_log(runtime, "theater_suspicion.job.started", {"dry_run": dry_run, "lookback_hours": lookback_hours})
 
     try:
-        theaters = _load_theaters(db)
+        theaters = _load_theaters(db, lookback_hours=lookback_hours)
         tracked_alliances = _load_tracked_alliance_ids(db)
         rows_processed = len(theaters)
 
