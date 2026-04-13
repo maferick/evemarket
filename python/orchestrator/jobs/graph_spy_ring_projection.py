@@ -91,37 +91,74 @@ def run_graph_spy_ring_projection(
         except Exception:
             pass
 
-        # Build projection via Cypher projection — union of edge sources
-        # We project Character nodes with weighted edges from multiple sources
-        cypher_node = "MATCH (n:Character) RETURN id(n) AS id"
-        cypher_rel = f"""
-        MATCH (a:Character)-[r:CO_OCCURS_WITH]->(b:Character)
-        WHERE r.occurrence_count >= {COPRESENCE_MIN_COUNT}
-        RETURN id(a) AS source, id(b) AS target, r.weight AS weight, 'copresence' AS type
-        UNION ALL
-        MATCH (a:Character)-[r:DIRECT_COMBAT]->(b:Character)
-        WHERE r.count >= {CROSS_SIDE_MIN_COUNT}
-        RETURN id(a) AS source, id(b) AS target, toFloat(r.count) AS weight, 'cross_side' AS type
-        """
-
-        # Try GDS cypher projection
+        # Build projection via the GDS 2.4+ Cypher projection function.
+        #
+        # Leiden requires the projection to be UNDIRECTED.  The legacy
+        # ``gds.graph.project.cypher`` procedure (also removed in GDS 2.4+)
+        # always produced DIRECTED relationships and rejected an
+        # ``orientation`` configuration option, which caused
+        # ``CALL gds.leiden.write`` to fail with::
+        #
+        #     Leiden requires relationship projections to be UNDIRECTED.
+        #     Selected relationships `[copresence]` are not all undirected.
+        #
+        # The function-style ``gds.graph.project(...)`` accepts an
+        # ``undirectedRelationshipTypes`` option that marks the projected
+        # relationship types as undirected without double-counting edges
+        # from a symmetric Cypher pattern.  We feed it a UNION ALL of the
+        # edge sources so a single projection contains both copresence and
+        # cross-side interactions, each tagged with its own relationship
+        # type.
         try:
             rows = client.query(
-                """
-                CALL gds.graph.project.cypher($name, $nodeQuery, $relQuery, {})
-                YIELD graphName, nodeCount, relationshipCount
-                RETURN graphName, nodeCount, relationshipCount
+                f"""
+                CALL {{
+                    MATCH (a:Character)-[r:CO_OCCURS_WITH]->(b:Character)
+                    WHERE r.occurrence_count >= {COPRESENCE_MIN_COUNT}
+                    RETURN a AS source, b AS target,
+                           toFloat(COALESCE(r.weight, 1.0)) AS weight,
+                           'copresence' AS rel_type
+                    UNION ALL
+                    MATCH (a:Character)-[r:DIRECT_COMBAT]->(b:Character)
+                    WHERE r.count >= {CROSS_SIDE_MIN_COUNT}
+                    RETURN a AS source, b AS target,
+                           toFloat(COALESCE(r.count, 1.0)) AS weight,
+                           'cross_side' AS rel_type
+                }}
+                WITH gds.graph.project(
+                    $name,
+                    source,
+                    target,
+                    {{
+                        relationshipType: rel_type,
+                        relationshipProperties: {{ weight: weight }}
+                    }},
+                    {{ undirectedRelationshipTypes: ['*'] }}
+                ) AS g
+                RETURN g.graphName AS graphName,
+                       g.nodeCount AS nodeCount,
+                       g.relationshipCount AS relationshipCount
                 """,
-                {"name": PROJECTION_NAME, "nodeQuery": cypher_node, "relQuery": cypher_rel},
-                timeout_seconds=120,
+                {"name": PROJECTION_NAME},
+                timeout_seconds=180,
             )
             if rows:
-                node_count = rows[0].get("nodeCount", 0)
-                edge_count = rows[0].get("relationshipCount", 0)
+                node_count = int(rows[0].get("nodeCount") or 0)
+                edge_count = int(rows[0].get("relationshipCount") or 0)
         except Exception as exc:
             logger.warning("GDS cypher projection failed: %s — falling back to MariaDB-only", exc)
             return _mariadb_only_projection(db, job, run_id, computed_at, started,
                                             reason="gds_projection_failed")
+
+        # Empty projections cause downstream Leiden / drop calls to fail
+        # with GraphNotFoundException — clean up and fall back early.
+        if edge_count == 0:
+            try:
+                client.query(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
+            except Exception:
+                pass
+            return _mariadb_only_projection(db, job, run_id, computed_at, started,
+                                            reason="empty_projection")
 
         # Run Leiden community detection on the projection
         try:
@@ -139,13 +176,32 @@ def run_graph_spy_ring_projection(
         except Exception as exc:
             logger.warning("Leiden community detection failed: %s — communities from MariaDB fallback", exc)
 
+        # Capture per-type relationship distribution before dropping the
+        # projection so the run log records what was actually built rather
+        # than the previous hard-coded ``{"copresence": edge_count}``.
+        try:
+            count_rows = client.query(
+                f"""
+                CALL gds.graph.relationships.stream('{PROJECTION_NAME}')
+                YIELD relationshipType
+                RETURN relationshipType AS rel_type, count(*) AS cnt
+                """,
+            )
+            for row in count_rows:
+                rt = row.get("rel_type")
+                if rt is not None:
+                    rel_dist[str(rt)] = int(row.get("cnt") or 0)
+        except Exception:
+            pass
+
         # Drop the projection — always clean up
         try:
             client.query(f"CALL gds.graph.drop('{PROJECTION_NAME}', false)")
         except Exception:
             pass
 
-        rel_dist = {"copresence": edge_count}
+        if not rel_dist:
+            rel_dist = {"all": edge_count}
 
         # Write run results
         _finish_projection_run(db, run_id, "success", node_count, edge_count, rel_dist)
