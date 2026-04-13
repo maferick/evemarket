@@ -20688,10 +20688,20 @@ function db_spy_network_case_members(int $caseId, int $limit = 200): array
     return db_select(
         'SELECT sncm.character_id, sncm.member_contribution_score, sncm.role_label,
                 sncm.evidence_json, sncm.computed_at,
-                COALESCE(emc.entity_name, CONCAT("Character #", sncm.character_id)) AS character_name
+                COALESCE(emc.entity_name, CONCAT("Character #", sncm.character_id)) AS character_name,
+                cohc.current_corporation_id,
+                cohc.current_alliance_id,
+                emc_corp.entity_name AS corporation_name,
+                emc_ally.entity_name AS alliance_name
          FROM spy_network_case_members sncm
          LEFT JOIN entity_metadata_cache emc
              ON emc.entity_type = "character" AND emc.entity_id = sncm.character_id
+         LEFT JOIN character_org_history_cache cohc
+             ON cohc.character_id = sncm.character_id AND cohc.source = "evewho"
+         LEFT JOIN entity_metadata_cache emc_corp
+             ON emc_corp.entity_type = "corporation" AND emc_corp.entity_id = cohc.current_corporation_id
+         LEFT JOIN entity_metadata_cache emc_ally
+             ON emc_ally.entity_type = "alliance" AND emc_ally.entity_id = cohc.current_alliance_id
          WHERE sncm.case_id = ?
          ORDER BY sncm.member_contribution_score DESC
          LIMIT ' . $safeLimit,
@@ -20706,11 +20716,27 @@ function db_spy_network_case_edges(int $caseId, int $limit = 200): array
     }
     $safeLimit = max(1, min(500, $limit));
     return db_select(
-        'SELECT character_id_a, character_id_b, edge_type, edge_weight,
-                component_weights_json, evidence_json, computed_at
-         FROM spy_network_case_edges
-         WHERE case_id = ?
-         ORDER BY edge_weight DESC
+        'SELECT snce.character_id_a, snce.character_id_b, snce.edge_type, snce.edge_weight,
+                snce.component_weights_json, snce.evidence_json, snce.computed_at,
+                COALESCE(emc_a.entity_name, CONCAT("Character #", snce.character_id_a)) AS character_name_a,
+                COALESCE(emc_b.entity_name, CONCAT("Character #", snce.character_id_b)) AS character_name_b,
+                emc_ally_a.entity_name AS alliance_name_a,
+                emc_ally_b.entity_name AS alliance_name_b
+         FROM spy_network_case_edges snce
+         LEFT JOIN entity_metadata_cache emc_a
+             ON emc_a.entity_type = "character" AND emc_a.entity_id = snce.character_id_a
+         LEFT JOIN entity_metadata_cache emc_b
+             ON emc_b.entity_type = "character" AND emc_b.entity_id = snce.character_id_b
+         LEFT JOIN character_org_history_cache cohc_a
+             ON cohc_a.character_id = snce.character_id_a AND cohc_a.source = "evewho"
+         LEFT JOIN character_org_history_cache cohc_b
+             ON cohc_b.character_id = snce.character_id_b AND cohc_b.source = "evewho"
+         LEFT JOIN entity_metadata_cache emc_ally_a
+             ON emc_ally_a.entity_type = "alliance" AND emc_ally_a.entity_id = cohc_a.current_alliance_id
+         LEFT JOIN entity_metadata_cache emc_ally_b
+             ON emc_ally_b.entity_type = "alliance" AND emc_ally_b.entity_id = cohc_b.current_alliance_id
+         WHERE snce.case_id = ?
+         ORDER BY snce.edge_weight DESC
          LIMIT ' . $safeLimit,
         [$caseId]
     );
