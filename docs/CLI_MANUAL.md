@@ -732,7 +732,6 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | Job Key | Description |
 |---------|-------------|
 | `compute_graph_sync` | Doctrine-fit-item graph sync to Neo4j |
-| `compute_graph_sync_doctrine_dependency` | Doctrine/fit/item anchor sync |
 | `compute_graph_sync_battle_intelligence` | Battle/actor anchor sync |
 | `compute_graph_sync_killmail_entities` | Killmail entity projection |
 | `compute_graph_derived_relationships` | Derived graph relationships |
@@ -749,7 +748,6 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `compute_counterintel_pipeline` | Counterintelligence synthesis |
 | `intelligence_pipeline` | Neo4j → MariaDB intelligence export |
 | `compute_buy_all` | Buy All planner materialization |
-| `compute_signals` | Intelligence signal generation |
 | `compute_economic_warfare` | Economic warfare scoring |
 | `compute_alliance_dossiers` | Alliance dossier generation |
 | `compute_threat_corridors` | Threat corridor analysis |
@@ -791,12 +789,10 @@ These can be run via `python -m orchestrator run-job --job-key <KEY>`:
 | `current_state_refresh_sync` | Current state projection refresh |
 | `analytics_bucket_1h_sync` | Hourly analytics rollups |
 | `analytics_bucket_1d_sync` | Daily analytics rollups |
-| `activity_priority_summary_sync` | Activity priority summaries |
 | `dashboard_summary_sync` | Dashboard payload materialization |
 | `loss_demand_summary_sync` | Loss-demand summaries |
 | `doctrine_intelligence_sync` | Doctrine intelligence snapshots |
 | `deal_alerts_sync` | Deal alert anomaly scan |
-| `rebuild_ai_briefings` | AI doctrine briefing generation |
 | `forecasting_ai_sync` | Forecasting AI summaries |
 | `market_comparison_summary_sync` | Market comparison materialization |
 | `market_hub_local_history_sync` | Local hub history daily rows |
@@ -817,11 +813,10 @@ Run graph jobs in this order to satisfy dependencies:
 2. compute_graph_sync                           # Doctrine-fit-item graph (run until done)
 3. compute_graph_sync_battle_intelligence       # Battle/actor anchors (run until done)
 4. compute_graph_sync_killmail_entities          # Killmail event nodes
-5. compute_graph_sync_doctrine_dependency        # Doctrine/fit/item anchors (run until done)
-6. compute_graph_derived_relationships           # Derived edges
-7. compute_graph_insights                        # Metrics → MariaDB
-8. compute_graph_topology_metrics                # Topology metrics
-9. compute_graph_prune                           # Stale edge cleanup
+5. compute_graph_derived_relationships           # Derived edges
+6. compute_graph_insights                        # Metrics → MariaDB
+7. compute_graph_topology_metrics                # Topology metrics
+8. compute_graph_prune                           # Stale edge cleanup
 ```
 
 ### Battle Intelligence Order
@@ -847,7 +842,6 @@ Phase 1: Graph Synchronization
   2. compute_graph_sync                         (loop until done)
   3. compute_graph_sync_battle_intelligence      (loop until done)
   4. compute_graph_sync_killmail_entities
-  5. compute_graph_sync_doctrine_dependency       (loop until done)
 
 Phase 2: Battle Intelligence
   6. compute_battle_rollups
@@ -898,12 +892,11 @@ Phase 7: Cleanup & Economics
  41. graph_model_audit
  42. graph_query_plan_validation
  43. compute_buy_all
- 44. compute_signals
- 45. compute_economic_warfare
- 46. discord_webhook_filter
+ 44. compute_economic_warfare
+ 45. discord_webhook_filter
 
 Phase 8: Maintenance
- 47. log_to_issues
+ 46. log_to_issues
 ```
 
 ---

@@ -258,7 +258,6 @@ python -m orchestrator run-job --job-key compute_graph_sync_battle_intelligence
 |-----|-----------|
 | `compute_graph_sync` | `graph_sync_cursor` |
 | `compute_graph_sync_battle_intelligence` | `graph_sync_battle_intelligence_cursor` |
-| `compute_graph_sync_doctrine_dependency` | `graph_sync_doctrine_dependency_cursor` |
 | `compute_graph_derived_relationships` | `graph_derived_relationships_character_cursor`, `graph_derived_relationships_fit_cursor` |
 
 ---

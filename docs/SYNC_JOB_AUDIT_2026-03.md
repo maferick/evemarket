@@ -21,9 +21,7 @@ This document is the operator-facing verification pass for Python-native sync/da
 | doctrine_intelligence_sync | recompute doctrine intelligence snapshots | `run_doctrine_intelligence_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | loss_demand_summary_sync | materialize loss-demand summary | `run_loss_demand_summary_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | dashboard_summary_sync | materialize dashboard summary payload | `run_dashboard_summary_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
-| rebuild_ai_briefings | rebuild AI briefing artifacts | `run_rebuild_ai_briefings` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | forecasting_ai_sync | refresh forecasting summary artifacts | `run_forecasting_ai_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
-| activity_priority_summary_sync | materialize activity-priority summary | `run_activity_priority_summary_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | analytics_bucket_1h_sync | hourly analytics rollups | `run_analytics_bucket_1h_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | analytics_bucket_1d_sync | daily analytics rollups | `run_analytics_bucket_1d_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
 | deal_alerts_sync | materialize deal alerts | `run_deal_alerts_sync` | yes | yes | yes | yes | no | complete replacement | Python-native processor in registry.
@@ -57,10 +55,8 @@ This document is the operator-facing verification pass for Python-native sync/da
 | market_comparison_summary_sync | Market comparison summary | yes | partial | partial | yes | no | no | yes | Bridge-coupled path remains.
 | loss_demand_summary_sync | Loss-demand summary | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
 | dashboard_summary_sync | Dashboard summary | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
-| rebuild_ai_briefings | AI briefing rebuild | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
 | market_hub_local_history_sync | Local history rebuild | yes | partial | partial | yes | no | no | yes | Bridge-coupled path remains.
 | forecasting_ai_sync | Forecasting summary | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
-| activity_priority_summary_sync | Activity-priority summary | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
 | analytics_bucket_1h_sync | Hourly rollups | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
 | analytics_bucket_1d_sync | Daily rollups | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.
 | deal_alerts_sync | Deal-alert materialization | yes | yes | yes | yes | no | no | yes | Use `run-job`; no dry-run mode yet.

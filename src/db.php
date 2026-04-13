@@ -18295,7 +18295,7 @@ function db_pipeline_observatory_data(): array
         'resolution'  => ['entity_metadata_resolve_sync', 'esi_alliance_history_sync'],
         'graph'       => ['compute_graph_sync', 'graph_community_detection_sync', 'graph_motif_detection_sync', 'graph_typed_interactions_sync', 'graph_temporal_metrics_sync', 'graph_evidence_paths_sync', 'compute_copresence_edges', 'compute_graph_sync_killmail_entities', 'compute_graph_sync_killmail_edges', 'neo4j_ml_exploration'],
         'intelligence' => ['compute_suspicion_scores_v2', 'compute_alliance_dossiers', 'compute_threat_corridors', 'compute_counterintel_pipeline', 'intelligence_pipeline', 'compute_battle_rollups', 'compute_behavioral_scoring', 'compute_sovereignty_alerts', 'compute_bloom_entry_points', 'compute_spy_feature_snapshots', 'build_spy_training_split', 'compute_identity_resolution', 'graph_spy_ring_projection', 'compute_spy_network_cases', 'compute_spy_risk_profiles', 'train_spy_shadow_model', 'score_spy_shadow_ml'],
-        'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'rebuild_ai_briefings', 'forecasting_ai_sync', 'discord_webhook_filter'],
+        'analytics'   => ['dashboard_summary_sync', 'analytics_bucket_1h_sync', 'analytics_bucket_1d_sync', 'forecasting_ai_sync', 'discord_webhook_filter'],
         'maintenance' => ['log_to_issues', 'cache_expiry_cleanup_sync'],
     ];
 

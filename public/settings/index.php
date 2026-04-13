@@ -2097,7 +2097,7 @@ include __DIR__ . '/../../src/views/partials/header.php';
                 </div>
 
                 <div class="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-muted">
-                    Configure either the local Ollama API or the Runpod serverless endpoint here, then manage cadence under <a href="<?= htmlspecialchars($sectionUrl('automation-sync', 'data-sync'), ENT_QUOTES) ?>" class="font-medium text-slate-100 hover:text-white">Settings → Automation &amp; Sync</a> for the <span class="font-medium text-slate-100">rebuild_ai_briefings</span> scheduler job. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
+                    Configure either the local Ollama API or the Runpod serverless endpoint here. Runpod requests now submit asynchronously and poll for completion within the configured timeout window. Small tiers stay compact, medium tiers add explanation and deltas, and large tiers unlock richer operator briefings while still keeping deterministic calculations authoritative.
                 </div>
 
                 <div class="flex items-center gap-4">

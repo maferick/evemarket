@@ -19,9 +19,7 @@ SYNC_JOBS=(
   market_comparison_summary_sync
   loss_demand_summary_sync
   dashboard_summary_sync
-  rebuild_ai_briefings
   forecasting_ai_sync
-  activity_priority_summary_sync
   analytics_bucket_1h_sync
   analytics_bucket_1d_sync
   deal_alerts_sync

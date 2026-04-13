@@ -63,7 +63,6 @@ DISPLAY_TIERS: dict[str, int] = {
     # ── Tier 2: Resolution & Enrichment ─────────────────────────────────
     "entity_metadata_resolve_sync": 2,
     "esi_alliance_history_sync": 2,
-    "compute_signals": 2,
     "deal_alerts_sync": 2,
 
     # ── Tier 3: Graph & Computation ─────────────────────────────────────
@@ -72,7 +71,6 @@ DISPLAY_TIERS: dict[str, int] = {
     "compute_graph_derived_relationships": 3,
     "compute_graph_sync_killmail_entities": 3,
     "compute_graph_sync_killmail_edges": 3,
-    "compute_graph_sync_doctrine_dependency": 3,
     "compute_graph_sync_battle_intelligence": 3,
     "compute_graph_prune": 3,
     "compute_graph_topology_metrics": 3,
@@ -112,10 +110,8 @@ DISPLAY_TIERS: dict[str, int] = {
 
     # ── Tier 5: Analytics & Output ──────────────────────────────────────
     "dashboard_summary_sync": 5,
-    "activity_priority_summary_sync": 5,
     "analytics_bucket_1h_sync": 5,
     "analytics_bucket_1d_sync": 5,
-    "rebuild_ai_briefings": 5,
     "forecasting_ai_sync": 5,
     "market_comparison_summary_sync": 5,
     "loss_demand_summary_sync": 5,

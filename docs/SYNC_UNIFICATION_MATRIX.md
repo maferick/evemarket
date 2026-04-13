@@ -11,12 +11,10 @@ This matrix tracks Python sync jobs that now run under the shared `run_sync_phas
 | `current_state_refresh_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `analytics_bucket_1h_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `analytics_bucket_1d_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `activity_priority_summary_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `dashboard_summary_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `loss_demand_summary_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `doctrine_intelligence_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `deal_alerts_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `rebuild_ai_briefings` | ✅ | ✅ | ✅ | ✅ | ✅ |
 | `forecasting_ai_sync` | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 ## Notes

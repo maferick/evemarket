@@ -18,12 +18,10 @@ from .jobs.compute_graph_sync import run_compute_graph_sync
 from .jobs.graph_pipeline import (
     run_compute_graph_derived_relationships,
     run_compute_graph_sync_battle_intelligence,
-    run_compute_graph_sync_doctrine_dependency,
     run_compute_graph_prune,
     run_compute_graph_topology_metrics,
 )
 from .jobs.behavioral_intelligence_v2 import run_compute_behavioral_baselines, run_compute_suspicion_scores_v2
-from .jobs.compute_signals import run_compute_signals
 from .jobs.battle_intelligence import (
     run_compute_battle_actor_features,
     run_compute_battle_anomalies,
@@ -154,9 +152,6 @@ def parse_args() -> argparse.Namespace:
     compute_auto_buyall.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_auto_buyall.add_argument("--verbose", action="store_true")
 
-    compute_signals = subparsers.add_parser("compute-signals", help="Generate precomputed intelligence signals into MariaDB")
-    compute_signals.add_argument("--app-root", default=resolve_app_root(__file__))
-    compute_signals.add_argument("--verbose", action="store_true")
     compute_ew = subparsers.add_parser("compute-economic-warfare", help="Compute economic warfare scores from opponent killmail data")
     compute_ew.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_ew.add_argument("--verbose", action="store_true")
@@ -178,9 +173,6 @@ def parse_args() -> argparse.Namespace:
     compute_graph_insights = subparsers.add_parser("compute-graph-insights", help="Compute graph-derived metrics and persist into MariaDB")
     compute_graph_insights.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_graph_insights.add_argument("--verbose", action="store_true")
-    compute_graph_sync_doctrine = subparsers.add_parser("compute-graph-sync-doctrine-dependency", help="Sync doctrine/fit/item anchors into Neo4j")
-    compute_graph_sync_doctrine.add_argument("--app-root", default=resolve_app_root(__file__))
-    compute_graph_sync_doctrine.add_argument("--verbose", action="store_true")
     compute_graph_sync_battle = subparsers.add_parser("compute-graph-sync-battle-intelligence", help="Sync battle/actor anchors into Neo4j")
     compute_graph_sync_battle.add_argument("--app-root", default=resolve_app_root(__file__))
     compute_graph_sync_battle.add_argument("--verbose", action="store_true")
@@ -399,15 +391,6 @@ def main() -> int:
         result = run_compute_auto_buyall(db)
         print(result)
         return 0
-    if command == "compute-signals":
-        app_root = Path(args.app_root).resolve()
-        config = load_php_runtime_config(app_root)
-        configure_logging(verbose=args.verbose, log_file=config.log_file)
-        from .db import SupplyCoreDb
-        db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_signals(db, influx_runtime(config.raw))
-        print(result)
-        return 0
     if command == "compute-economic-warfare":
         app_root = Path(args.app_root).resolve()
         config = load_php_runtime_config(app_root)
@@ -474,15 +457,6 @@ def main() -> int:
         from .db import SupplyCoreDb
         db = SupplyCoreDb(config.raw.get("db", {}))
         result = run_compute_graph_insights(db, neo4j_runtime(config.raw), influx_runtime(config.raw))
-        print(result)
-        return 0
-    if command == "compute-graph-sync-doctrine-dependency":
-        app_root = Path(args.app_root).resolve()
-        config = load_php_runtime_config(app_root)
-        configure_logging(verbose=args.verbose, log_file=config.log_file)
-        from .db import SupplyCoreDb
-        db = SupplyCoreDb(config.raw.get("db", {}))
-        result = run_compute_graph_sync_doctrine_dependency(db, neo4j_runtime(config.raw))
         print(result)
         return 0
     if command == "compute-graph-sync-battle-intelligence":

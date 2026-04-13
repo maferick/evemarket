@@ -36,9 +36,9 @@ from .worker_runtime import resident_memory_bytes, utc_now_iso
 # Must stay in sync with supplycore_ui_refresh_job_domain_map() in PHP.
 _UI_REFRESH_JOB_MAP: dict[str, dict[str, list[str]]] = {
     "killmail_r2z2_sync": {
-        "domains": ["doctrine_activity", "loss_aware_views", "activity_priority", "killmail_overview"],
+        "domains": ["doctrine_activity", "loss_aware_views", "killmail_overview"],
         "ui_sections": ["activity-doctrines", "activity-sidebar", "activity-items", "doctrine-fit-history", "killmail-overview-summary", "killmail-overview-status", "killmail-overview-table"],
-        "version_keys": ["killmail_activity_version", "activity_priority_version", "killmail_overview_version"],
+        "version_keys": ["killmail_activity_version", "killmail_overview_version"],
     },
     "alliance_current_sync": {
         "domains": ["alliance_stock", "doctrine_readiness", "fit_availability", "buyall"],
@@ -69,11 +69,6 @@ _UI_REFRESH_JOB_MAP: dict[str, dict[str, list[str]]] = {
         "domains": ["loss_aware_views", "dashboard"],
         "ui_sections": ["dashboard-queues"],
         "version_keys": ["loss_demand_version", "dashboard_summary_version"],
-    },
-    "activity_priority_summary_sync": {
-        "domains": ["activity_priority", "doctrine_activity"],
-        "ui_sections": ["activity-summary", "activity-doctrines", "activity-sidebar", "activity-items", "dashboard-doctrine"],
-        "version_keys": ["activity_priority_version"],
     },
     "current_state_refresh_sync": {
         "domains": ["dashboard", "market_comparison", "loss_aware_views"],

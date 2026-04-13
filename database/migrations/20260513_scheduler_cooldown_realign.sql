@@ -29,7 +29,6 @@ UPDATE sync_schedules
         'compute_auto_doctrines',
         'market_hub_local_history_sync',
         'analytics_bucket_1d_sync',
-        'rebuild_ai_briefings',
         'discord_webhook_filter'
     );
 
@@ -108,7 +107,6 @@ UPDATE sync_schedules
         'market_hub_local_history_sync',
         'analytics_bucket_1h_sync',
         'analytics_bucket_1d_sync',
-        'rebuild_ai_briefings',
         'forecasting_ai_sync',
         'discord_webhook_filter',
         'compute_graph_sync_killmail_entities',

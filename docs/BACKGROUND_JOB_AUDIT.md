@@ -24,7 +24,6 @@ These are the only active recurring jobs in the Python worker-pool registry (`WO
 | job_key | lang | execution path | enabled | required for correct site behavior | produced data/tables (primary) | dependent features/pages | python-native | legacy php exists | target action |
 |---|---|---|---|---|---|---|---|---|---|
 | compute_graph_sync | Python | `python -m orchestrator worker-pool` -> `run_compute_graph_sync` | yes | yes | graph model sync artifacts, graph-backed intelligence snapshots | graph-derived pages, doctrine/battle dependency graph context | yes | no direct equivalent job script | keep_python |
-| compute_graph_sync_doctrine_dependency | Python | worker-pool | yes | yes | doctrine dependency graph links | doctrine intelligence views | yes | no | keep_python |
 | compute_graph_sync_battle_intelligence | Python | worker-pool | yes | yes | battle intelligence graph links | battle intelligence pages | yes | no | keep_python |
 | compute_graph_derived_relationships | Python | worker-pool | yes | yes | derived relationship edges | graph-derived features | yes | no | keep_python |
 | compute_graph_insights | Python | worker-pool | yes | yes | graph insight materialization | graph/insight pages | yes | no | keep_python |
@@ -33,7 +32,6 @@ These are the only active recurring jobs in the Python worker-pool registry (`WO
 | compute_behavioral_baselines | Python | worker-pool | yes | yes | behavioral baseline feature tables | battle intelligence/anomaly features | yes | no | keep_python |
 | compute_suspicion_scores_v2 | Python | worker-pool | yes | yes | v2 suspicion score materialization | battle intelligence risk/suspicion views | yes | no | keep_python |
 | compute_buy_all | Python | worker-pool | yes | yes | buy-all/materialized recommendation outputs | `/buy-all`, dashboard supply readiness surfaces | yes | php script retired | keep_python |
-| compute_signals | Python | worker-pool | yes | yes | computed signal snapshots | dashboard/market intelligence signals | yes | no | keep_python |
 | compute_battle_rollups | Python | worker-pool | yes | yes | battle rollup tables | battle intelligence summary pages | yes | no | keep_python |
 | compute_battle_target_metrics | Python | worker-pool | yes | yes | target metrics | battle intelligence target pages | yes | no | keep_python |
 | compute_battle_anomalies | Python | worker-pool | yes | yes | anomaly datasets | battle anomaly panels | yes | no | keep_python |
@@ -51,14 +49,12 @@ These exist in `DISABLED_WORKER_JOBS` and are **not** executed by the recurring 
 - dashboard_summary_sync
 - doctrine_intelligence_sync
 - loss_demand_summary_sync
-- activity_priority_summary_sync
 - current_state_refresh_sync
 - market_hub_local_history_sync
 - market_hub_historical_sync
 - alliance_historical_sync
 - analytics_bucket_1h_sync
 - analytics_bucket_1d_sync
-- rebuild_ai_briefings
 - forecasting_ai_sync
 - killmail_r2z2_sync
 
@@ -82,10 +78,10 @@ Target action: **remove_legacy_php**.
 
 | Feature/page family | Primary precomputed/state tables | Producer jobs | Active now | Python-native | Risk if missing |
 |---|---|---|---|---|---|
-| Dashboard (`/`) | computed signals + summary caches + market intelligence snapshots | `compute_signals`, `compute_buy_all` | yes | yes | stale executive summary cards and action priorities |
+| Dashboard (`/`) | summary caches + market intelligence snapshots | `compute_buy_all` | yes | yes | stale executive summary cards and action priorities |
 | Buy-all (`/buy-all`) | buy-all recommendation outputs | `compute_buy_all` | yes | yes | stale or empty purchase recommendation backlog |
-| Doctrine intelligence (`/doctrine*`) | doctrine dependency graph + graph insights | `compute_graph_sync_doctrine_dependency`, `compute_graph_sync`, `compute_graph_insights` | yes | yes | stale doctrine dependency and recommendation context |
-| Market comparison/status pages | graph/market-compute outputs surfaced by market intelligence layer | `compute_graph_insights`, `compute_signals`, `compute_buy_all` | yes | yes | stale comparison deltas and priority labeling |
+| Doctrine intelligence (`/doctrine*`) | graph sync + graph insights | `compute_graph_sync`, `compute_graph_insights` | yes | yes | stale doctrine dependency and recommendation context |
+| Market comparison/status pages | graph/market-compute outputs surfaced by market intelligence layer | `compute_graph_insights`, `compute_buy_all` | yes | yes | stale comparison deltas and priority labeling |
 | Deal alerts (`/deal-alerts`) | `market_deal_alerts_current` | **disabled legacy job path** (no active recurring worker job in current lane) | no | no | stale alerts until dedicated Python-native deal-alert processor is introduced |
 | Graph-derived pages | graph sync + derived relationship datasets | graph job family above | yes | yes | stale graph topology/relationship views |
 | Battle intelligence (`/battle-intelligence*`) | battle rollups/anomaly/actor-feature/suspicion datasets | `compute_battle_rollups`, `compute_battle_target_metrics`, `compute_battle_anomalies`, `compute_battle_actor_features`, `compute_suspicion_scores_v2` | yes | yes | stale battle anomaly and actor intelligence |
