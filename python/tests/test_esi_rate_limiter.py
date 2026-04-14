@@ -113,14 +113,98 @@ class RateLimiterTests(unittest.TestCase):
             "X-Ratelimit-Remaining": "48",
         })
         stats = limiter.stats
-        self.assertEqual(len(stats), 2)
         self.assertIn("alpha", stats)
         self.assertIn("beta", stats)
+        # stats also always contains the synthetic _error_limit key.
+        self.assertIn("_error_limit", stats)
 
     def test_none_headers_handled_gracefully(self) -> None:
         limiter = EsiRateLimiter()
         limiter.update_from_response(200, None)
-        self.assertEqual(limiter.stats, {})
+        # Only the _error_limit synthetic key should be present.
+        self.assertIn("_error_limit", limiter.stats)
+        self.assertFalse(limiter.stats["_error_limit"]["initialized"])
+
+    def test_stats_includes_error_limit_key(self) -> None:
+        limiter = EsiRateLimiter()
+        limiter.update_from_response(200, {
+            "X-Ratelimit-Group": "market",
+            "X-Ratelimit-Limit": "150/15m",
+            "X-Ratelimit-Remaining": "148",
+        })
+        stats = limiter.stats
+        self.assertIn("_error_limit", stats)
+        self.assertIn("remain", stats["_error_limit"])
+        self.assertIn("reset_in_seconds", stats["_error_limit"])
+        self.assertIn("initialized", stats["_error_limit"])
+
+
+class ErrorLimitTests(unittest.TestCase):
+    def test_error_limit_headers_parsed(self) -> None:
+        limiter = EsiRateLimiter()
+        limiter.update_from_response(420, {
+            "X-ESI-Error-Limit-Remain": "50",
+            "X-ESI-Error-Limit-Reset": "30",
+        })
+        stats = limiter.stats["_error_limit"]
+        self.assertTrue(stats["initialized"])
+        self.assertEqual(stats["remain"], 50)
+        self.assertAlmostEqual(stats["reset_in_seconds"], 30.0, delta=1.0)
+
+    def test_error_limit_remain_only(self) -> None:
+        limiter = EsiRateLimiter()
+        limiter.update_from_response(200, {
+            "X-ESI-Error-Limit-Remain": "75",
+        })
+        stats = limiter.stats["_error_limit"]
+        self.assertTrue(stats["initialized"])
+        self.assertEqual(stats["remain"], 75)
+
+    def test_acquire_blocks_when_error_limit_exhausted(self) -> None:
+        limiter = EsiRateLimiter()
+        # Simulate error limit exhausted with a very short reset window.
+        limiter.update_from_response(420, {
+            "X-ESI-Error-Limit-Remain": "0",
+            "X-ESI-Error-Limit-Reset": "1",
+        })
+        start = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - start
+        self.assertGreaterEqual(elapsed, 0.8)
+        self.assertLess(elapsed, 4.0)
+
+    def test_acquire_does_not_block_when_error_limit_not_exhausted(self) -> None:
+        limiter = EsiRateLimiter()
+        limiter.update_from_response(200, {
+            "X-ESI-Error-Limit-Remain": "50",
+            "X-ESI-Error-Limit-Reset": "30",
+        })
+        start = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 0.1)
+
+    def test_error_limit_reset_deadline_expires(self) -> None:
+        limiter = EsiRateLimiter()
+        # Exhaust the limit but with a reset time already in the past.
+        limiter.update_from_response(420, {
+            "X-ESI-Error-Limit-Remain": "0",
+            "X-ESI-Error-Limit-Reset": "0",
+        })
+        start = time.monotonic()
+        limiter.acquire()
+        elapsed = time.monotonic() - start
+        # Deadline already passed — should not block.
+        self.assertLess(elapsed, 0.5)
+
+    def test_invalid_error_limit_headers_ignored(self) -> None:
+        limiter = EsiRateLimiter()
+        limiter.update_from_response(200, {
+            "X-ESI-Error-Limit-Remain": "not-a-number",
+            "X-ESI-Error-Limit-Reset": "also-bad",
+        })
+        # Graceful: no crash, uninitialized state.
+        self.assertFalse(limiter.stats["_error_limit"]["initialized"])
 
 
 if __name__ == "__main__":

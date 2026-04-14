@@ -13,6 +13,9 @@ ESI rate limiting docs:
   - Token costs: 2xx=2, 3xx=1, 4xx=5, 5xx=0 (429 costs 0).
   - Headers: X-Ratelimit-Group, X-Ratelimit-Limit (e.g. "150/15m"),
     X-Ratelimit-Remaining, X-Ratelimit-Used, Retry-After (on 429).
+  - Global error limit: X-ESI-Error-Limit-Remain (errors left in this fixed
+    time frame) and X-ESI-Error-Limit-Reset (seconds until the frame resets).
+    Once remain hits 0, ESI discards all requests until the frame ends.
 """
 
 from __future__ import annotations
@@ -39,6 +42,9 @@ _SAFETY_MARGIN = 0.10
 
 # When remaining tokens are unknown and no Retry-After, use this delay.
 _FALLBACK_DELAY_SECONDS = 0.15
+
+# Log a warning when error-limit remain drops below this threshold.
+_ERROR_LIMIT_WARN_THRESHOLD = 10
 
 
 def token_cost_for_status(status_code: int) -> int:
@@ -85,6 +91,23 @@ class _GroupBucket:
     initialized: bool = False
 
 
+@dataclass
+class _ErrorLimitState:
+    """Tracks the global ESI error limit (X-ESI-Error-Limit-Remain/Reset).
+
+    Unlike the per-group bucket limit, the error limit is a fixed time frame
+    applied globally across all ESI requests from this application.  When
+    ``remain`` reaches 0, ESI discards every request until the frame ends.
+
+    ``reset_deadline`` is a ``time.monotonic()`` timestamp representing when
+    the current error-limit frame expires and the counter resets.
+    """
+
+    remain: int = 100
+    reset_deadline: float = 0.0  # monotonic timestamp when frame resets
+    initialized: bool = False
+
+
 class EsiRateLimiter:
     """Process-wide ESI rate limiter.
 
@@ -112,6 +135,8 @@ class EsiRateLimiter:
         self._redis: RedisClient | None = None
         # Optional DB handle for MariaDB fallback.
         self._db: Any = None
+        # Global ESI error limit state (X-ESI-Error-Limit-Remain/Reset).
+        self._error_limit = _ErrorLimitState()
 
     def set_redis(self, redis: RedisClient) -> None:
         """Inject a Redis client for cross-process rate-limit coordination.
@@ -154,6 +179,24 @@ class EsiRateLimiter:
                     time.sleep(wait)
                 finally:
                     self._lock.acquire()
+
+            # Enforce global ESI error limit.  When remain == 0, ESI discards
+            # all requests until the fixed time frame resets — block here so we
+            # don't accumulate wasted 420 responses.
+            self._merge_redis_error_limit()
+            if self._error_limit.initialized and self._error_limit.remain == 0:
+                now = time.monotonic()
+                wait = max(0.0, self._error_limit.reset_deadline - now)
+                if wait > 0:
+                    logger.warning(
+                        "ESI error limit exhausted: blocking for %.1fs until frame resets",
+                        wait,
+                    )
+                    self._lock.release()
+                    try:
+                        time.sleep(wait)
+                    finally:
+                        self._lock.acquire()
 
             resolved_group = group or self._last_group
             if resolved_group is None:
@@ -208,6 +251,8 @@ class EsiRateLimiter:
         limit = _get("X-Ratelimit-Limit")
         remaining = _get("X-Ratelimit-Remaining")
         retry_after = _get("Retry-After")
+        error_limit_remain = _get("X-ESI-Error-Limit-Remain")
+        error_limit_reset = _get("X-ESI-Error-Limit-Reset")
 
         with self._lock:
             # Handle 429 Retry-After.
@@ -219,6 +264,13 @@ class EsiRateLimiter:
                     logger.warning("ESI 429: Retry-After %s seconds", retry_after)
                 except ValueError:
                     pass
+
+            # Handle global error limit headers.  These are mutually exclusive
+            # with the bucket-limit headers — ESI sends one set or the other
+            # depending on which limit triggered.  We parse them whenever
+            # present so we always have the freshest picture.
+            if error_limit_remain is not None or error_limit_reset is not None:
+                self._update_error_limit(error_limit_remain, error_limit_reset)
 
             if group:
                 self._last_group = group
@@ -240,6 +292,91 @@ class EsiRateLimiter:
 
                 # Publish to Redis for cross-process coordination.
                 self._publish_redis_ratelimit(group, bucket, retry_after_seconds)
+
+    # -- Error limit helpers -----------------------------------------------
+
+    def _update_error_limit(
+        self,
+        remain_raw: str | None,
+        reset_raw: str | None,
+    ) -> None:
+        """Parse and store X-ESI-Error-Limit-Remain/Reset headers.
+
+        Must be called with ``self._lock`` held.
+        """
+        now = time.monotonic()
+        if remain_raw is not None:
+            try:
+                remain = int(remain_raw)
+                self._error_limit.remain = remain
+                self._error_limit.initialized = True
+                if remain == 0:
+                    logger.error(
+                        "ESI error limit exhausted (remain=0); all requests will be "
+                        "blocked until the frame resets."
+                    )
+                elif remain <= _ERROR_LIMIT_WARN_THRESHOLD:
+                    logger.warning(
+                        "ESI error limit running low: %d errors remaining in this frame",
+                        remain,
+                    )
+            except ValueError:
+                pass
+
+        if reset_raw is not None:
+            try:
+                reset_seconds = float(reset_raw)
+                self._error_limit.reset_deadline = now + reset_seconds
+                self._error_limit.initialized = True
+            except ValueError:
+                pass
+
+        # Publish updated state cross-process via Redis.
+        self._publish_redis_error_limit()
+
+    def _merge_redis_error_limit(self) -> None:
+        """Pull the most-conservative error-limit state from Redis.
+
+        Must be called with ``self._lock`` held.
+        """
+        if self._redis is None or not self._redis.available:
+            return
+        from .redis_keys import esi_error_limit_key
+        data = self._redis.get_json(esi_error_limit_key())
+        if not data or not isinstance(data, dict):
+            return
+        try:
+            redis_remain = int(data.get("remain", self._error_limit.remain))
+            redis_deadline = float(data.get("reset_deadline", self._error_limit.reset_deadline))
+            # Most-conservative-wins: take the lower remain.
+            if not self._error_limit.initialized or redis_remain < self._error_limit.remain:
+                self._error_limit.remain = redis_remain
+                self._error_limit.initialized = True
+            # Take the later deadline (more pessimistic reset time).
+            if redis_deadline > self._error_limit.reset_deadline:
+                self._error_limit.reset_deadline = redis_deadline
+        except (ValueError, TypeError):
+            pass
+
+    def _publish_redis_error_limit(self) -> None:
+        """Write current error-limit state to Redis.
+
+        Must be called with ``self._lock`` held.
+        """
+        if self._redis is None or not self._redis.available:
+            return
+        from .redis_keys import esi_error_limit_key
+        # TTL: however long until the frame resets, plus a small buffer.
+        now = time.monotonic()
+        ttl = max(60, int(self._error_limit.reset_deadline - now) + 10)
+        self._redis.set_json(
+            esi_error_limit_key(),
+            {
+                "remain": self._error_limit.remain,
+                "reset_deadline": self._error_limit.reset_deadline,
+            },
+            ex=ttl,
+        )
 
     # -- Redis coordination helpers ----------------------------------------
 
@@ -335,7 +472,7 @@ class EsiRateLimiter:
     def stats(self) -> dict[str, dict[str, object]]:
         """Return current rate-limit state for diagnostics."""
         with self._lock:
-            return {
+            groups = {
                 group: {
                     "max_tokens": b.max_tokens,
                     "remaining": b.remaining,
@@ -344,6 +481,13 @@ class EsiRateLimiter:
                 }
                 for group, b in self._groups.items()
             }
+            now = time.monotonic()
+            groups["_error_limit"] = {
+                "remain": self._error_limit.remain,
+                "reset_in_seconds": max(0.0, self._error_limit.reset_deadline - now),
+                "initialized": self._error_limit.initialized,
+            }
+            return groups
 
 
 # Process-wide singleton — import this from any module that makes ESI calls.
