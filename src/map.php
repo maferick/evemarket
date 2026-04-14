@@ -1571,41 +1571,64 @@ function map_layout_universe_force(array $nodeIds, array $rawEdges): array
 /**
  * Build a universe-level scene where each node is a region (aggregated view).
  * Edges connect regions that share at least one cross-region stargate.
+ *
+ * Primary data source: Neo4j (populated nightly by graph_universe_sync).
+ * Fallback: MariaDB ref_regions / ref_systems / ref_stargates.
  */
 function map_build_universe_aggregated_scene(): ?array
 {
     $t0 = hrtime(true);
 
-    $regionRows = db_select(
-        "SELECT r.region_id, r.region_name,
-                COUNT(s.system_id)       AS system_count,
-                ROUND(AVG(s.security),3) AS avg_security
-         FROM ref_regions r
-         JOIN ref_systems s USING (region_id)
-         GROUP BY r.region_id, r.region_name
-         ORDER BY r.region_id"
+    // ── Neo4j path ──────────────────────────────────────────────────────
+    $regionRows = neo4j_query(
+        'MATCH (r:Region)
+         OPTIONAL MATCH (r)<-[:IN_REGION]-(:Constellation)<-[:IN_CONSTELLATION]-(s:System)
+         WITH r, count(DISTINCT s) AS system_count, coalesce(avg(s.security), 0.0) AS avg_security
+         RETURN r.region_id AS region_id, r.name AS region_name,
+                system_count, avg_security
+         ORDER BY r.region_id'
     );
-    if ($regionRows === []) return null;
+    $interRows = [];
+    if ($regionRows !== []) {
+        $interRows = neo4j_query(
+            'MATCH (sa:System)-[:CONNECTS_TO]-(sb:System)
+             WHERE sa.region_id <> sb.region_id
+             RETURN DISTINCT sa.region_id AS from_region, sb.region_id AS to_region'
+        );
+    }
+
+    // ── MariaDB fallback ────────────────────────────────────────────────
+    if ($regionRows === []) {
+        $regionRows = db_select(
+            "SELECT r.region_id, r.region_name AS region_name,
+                    COUNT(s.system_id)       AS system_count,
+                    ROUND(AVG(s.security),3) AS avg_security
+             FROM ref_regions r
+             JOIN ref_systems s USING (region_id)
+             GROUP BY r.region_id, r.region_name
+             ORDER BY r.region_id"
+        );
+        if ($regionRows === []) return null;
+
+        $interRows = db_select(
+            "SELECT DISTINCT sa.region_id AS from_region, sb.region_id AS to_region
+             FROM ref_stargates g
+             JOIN ref_systems sa ON sa.system_id = g.system_id
+             JOIN ref_systems sb ON sb.system_id = g.dest_system_id
+             WHERE sa.region_id != sb.region_id"
+        );
+    }
 
     $nodeMap = [];
     foreach ($regionRows as $r) {
         $rid = (int) $r['region_id'];
         $nodeMap[$rid] = [
             'id'           => $rid,
-            'name'         => (string) $r['region_name'],
-            'security'     => (float)  $r['avg_security'],
-            'system_count' => (int)    $r['system_count'],
+            'name'         => (string) ($r['region_name'] ?? ('Region ' . $rid)),
+            'security'     => (float)  ($r['avg_security'] ?? 0.0),
+            'system_count' => (int)    ($r['system_count'] ?? 0),
         ];
     }
-
-    // Inter-region stargate connections
-    $interRows = db_select(
-        "SELECT DISTINCT sa.region_id AS from_region, sb.region_id AS to_region
-         FROM ref_stargates g
-         JOIN ref_systems sa ON sa.system_id = g.system_id
-         JOIN ref_systems sb ON sb.system_id = g.dest_system_id
-         WHERE sa.region_id != sb.region_id"
-    );
 
     $rawEdges = [];
     $drawn    = [];
@@ -1681,12 +1704,26 @@ function map_build_universe_dense_scene(): ?array
 {
     $t0 = hrtime(true);
 
-    $systems = db_select(
-        "SELECT s.system_id, s.system_name, s.security,
-                s.constellation_id, s.region_id
-         FROM ref_systems s
-         ORDER BY s.region_id, s.constellation_id, s.system_id"
+    // ── Neo4j path ──────────────────────────────────────────────────────
+    $systems = neo4j_query(
+        'MATCH (s:System)
+         RETURN s.system_id       AS system_id,
+                s.name             AS system_name,
+                s.security         AS security,
+                s.constellation_id AS constellation_id,
+                s.region_id        AS region_id
+         ORDER BY s.region_id, s.constellation_id, s.system_id'
     );
+
+    // ── MariaDB fallback ────────────────────────────────────────────────
+    if ($systems === []) {
+        $systems = db_select(
+            "SELECT s.system_id, s.system_name AS system_name, s.security,
+                    s.constellation_id, s.region_id
+             FROM ref_systems s
+             ORDER BY s.region_id, s.constellation_id, s.system_id"
+        );
+    }
     if ($systems === []) return null;
 
     $nodeMap  = [];
@@ -1704,13 +1741,19 @@ function map_build_universe_dense_scene(): ?array
         $byRegion[$rid][] = $sid;
     }
 
-    // Fetch all intra-universe stargates in one query (no massive IN clause)
-    $allGates = db_select(
-        "SELECT g.system_id, g.dest_system_id
-         FROM ref_stargates g
-         JOIN ref_systems sa ON sa.system_id = g.system_id
-         JOIN ref_systems sb ON sb.system_id = g.dest_system_id"
+    // Fetch all intra-universe stargates — Neo4j first, MariaDB fallback
+    $allGates = neo4j_query(
+        'MATCH (a:System)-[:CONNECTS_TO]->(b:System)
+         RETURN a.system_id AS system_id, b.system_id AS dest_system_id'
     );
+    if ($allGates === []) {
+        $allGates = db_select(
+            "SELECT g.system_id, g.dest_system_id
+             FROM ref_stargates g
+             JOIN ref_systems sa ON sa.system_id = g.system_id
+             JOIN ref_systems sb ON sb.system_id = g.dest_system_id"
+        );
+    }
 
     $rawEdges = [];
     $drawn    = [];
