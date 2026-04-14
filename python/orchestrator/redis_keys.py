@@ -56,6 +56,15 @@ def esi_suppress_key(endpoint_or_group: str) -> str:
     return f"esi:suppress:v1:{endpoint_or_group}"
 
 
+def esi_error_limit_key() -> str:
+    """Global ESI error-limit state (X-ESI-Error-Limit-Remain/Reset).
+
+    Unlike rate-limit buckets, the error limit is not per-group — it
+    applies to the entire application's ESI usage.
+    """
+    return "esi:error_limit:v1"
+
+
 # -- Distributed locks -------------------------------------------------
 
 def esi_fetch_lock_key(endpoint_key: str) -> str:
