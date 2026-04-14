@@ -1,0 +1,75 @@
+/* AegisCore Map Renderer — component styles */
+
+.aegis-map-root {
+    position: relative;
+    background: #04080f;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+/* Header bar rendered above the SVG canvas */
+.aegis-map-header {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 6px 12px;
+    background: rgba(4, 8, 15, 0.82);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.aegis-map-scope {
+    color: #38bdf8;
+    text-transform: uppercase;
+}
+
+.aegis-map-stat {
+    color: #94a3b8;
+}
+
+.aegis-map-sep {
+    color: #475569;
+}
+
+/* Loading / error placeholders */
+.aegis-map-loading,
+.aegis-map-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 200px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    color: #64748b;
+}
+
+.aegis-map-error {
+    color: #f87171;
+}
+
+/* Tooltip (appended to root by JS) */
+.aegis-map-tooltip {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    z-index: 50;
+    background: #0f172a;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
+    color: #e2e8f0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    white-space: nowrap;
+}

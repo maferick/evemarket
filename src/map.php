@@ -1480,3 +1480,340 @@ function map_generate_region(int $regionId): ?string
     $svg = map_render_svg($scene);
     return map_cache_put($cachePath, $svg);
 }
+
+// ---------------------------------------------------------------------------
+//  Universe-level Map
+// ---------------------------------------------------------------------------
+
+/**
+ * Fruchterman-Reingold force-directed layout for universe-level graphs.
+ *
+ * @param int[]     $nodeIds   Flat list of node IDs to position.
+ * @param int[][]   $rawEdges  Pairs [a, b] representing undirected edges.
+ * @return array<int, array{x: float, y: float}>
+ */
+function map_layout_universe_force(array $nodeIds, array $rawEdges): array
+{
+    $n = count($nodeIds);
+    if ($n === 0) return [];
+    if ($n === 1) return [$nodeIds[0] => ['x' => 0.5, 'y' => 0.5]];
+
+    // Initialise on a circle so every run is deterministic
+    $pos = [];
+    foreach ($nodeIds as $i => $id) {
+        $angle = (2.0 * M_PI * $i / $n) - M_PI / 2.0;
+        $pos[$id] = [
+            'x' => 0.5 + 0.42 * cos($angle),
+            'y' => 0.5 + 0.42 * sin($angle),
+        ];
+    }
+
+    $k        = 0.9 / sqrt((float) $n); // ideal edge length
+    $temp     = 0.12;                    // initial "temperature"
+    $cooling  = 0.93;
+
+    for ($iter = 0; $iter < 80; $iter++) {
+        $disp = array_fill_keys($nodeIds, ['x' => 0.0, 'y' => 0.0]);
+
+        // Repulsive forces (all pairs)
+        $cnt = count($nodeIds);
+        for ($i = 0; $i < $cnt - 1; $i++) {
+            $v = $nodeIds[$i];
+            for ($j = $i + 1; $j < $cnt; $j++) {
+                $u  = $nodeIds[$j];
+                $dx = $pos[$v]['x'] - $pos[$u]['x'];
+                $dy = $pos[$v]['y'] - $pos[$u]['y'];
+                $d2 = $dx * $dx + $dy * $dy;
+                if ($d2 < 1e-8) {
+                    // Deterministic tiny jitter for coincident nodes
+                    $dx = 0.001 * (($v % 7) - 3);
+                    $dy = 0.001 * (($u % 7) - 3);
+                    $d2 = $dx * $dx + $dy * $dy + 1e-8;
+                }
+                $dist  = sqrt($d2);
+                $force = $k * $k / $dist;
+                $disp[$v]['x'] += ($dx / $dist) * $force;
+                $disp[$v]['y'] += ($dy / $dist) * $force;
+                $disp[$u]['x'] -= ($dx / $dist) * $force;
+                $disp[$u]['y'] -= ($dy / $dist) * $force;
+            }
+        }
+
+        // Attractive forces (edges)
+        foreach ($rawEdges as [$a, $b]) {
+            if (!isset($pos[$a], $pos[$b])) continue;
+            $dx   = $pos[$a]['x'] - $pos[$b]['x'];
+            $dy   = $pos[$a]['y'] - $pos[$b]['y'];
+            $dist = max(1e-4, sqrt($dx * $dx + $dy * $dy));
+            $force = $dist * $dist / $k;
+            $disp[$a]['x'] -= ($dx / $dist) * $force;
+            $disp[$a]['y'] -= ($dy / $dist) * $force;
+            $disp[$b]['x'] += ($dx / $dist) * $force;
+            $disp[$b]['y'] += ($dy / $dist) * $force;
+        }
+
+        // Apply displacements, capped by temperature
+        foreach ($nodeIds as $v) {
+            $dx  = $disp[$v]['x'];
+            $dy  = $disp[$v]['y'];
+            $mag = max(1e-4, sqrt($dx * $dx + $dy * $dy));
+            $s   = min($mag, $temp) / $mag;
+            $pos[$v]['x'] = max(0.04, min(0.96, $pos[$v]['x'] + $dx * $s));
+            $pos[$v]['y'] = max(0.04, min(0.96, $pos[$v]['y'] + $dy * $s));
+        }
+
+        $temp *= $cooling;
+    }
+
+    return $pos;
+}
+
+/**
+ * Build a universe-level scene where each node is a region (aggregated view).
+ * Edges connect regions that share at least one cross-region stargate.
+ */
+function map_build_universe_aggregated_scene(): ?array
+{
+    $t0 = hrtime(true);
+
+    $regionRows = db_select(
+        "SELECT r.region_id, r.region_name,
+                COUNT(s.system_id)       AS system_count,
+                ROUND(AVG(s.security),3) AS avg_security
+         FROM ref_regions r
+         JOIN ref_systems s USING (region_id)
+         GROUP BY r.region_id, r.region_name
+         ORDER BY r.region_id"
+    );
+    if ($regionRows === []) return null;
+
+    $nodeMap = [];
+    foreach ($regionRows as $r) {
+        $rid = (int) $r['region_id'];
+        $nodeMap[$rid] = [
+            'id'           => $rid,
+            'name'         => (string) $r['region_name'],
+            'security'     => (float)  $r['avg_security'],
+            'system_count' => (int)    $r['system_count'],
+        ];
+    }
+
+    // Inter-region stargate connections
+    $interRows = db_select(
+        "SELECT DISTINCT sa.region_id AS from_region, sb.region_id AS to_region
+         FROM ref_stargates g
+         JOIN ref_systems sa ON sa.system_id = g.system_id
+         JOIN ref_systems sb ON sb.system_id = g.dest_system_id
+         WHERE sa.region_id != sb.region_id"
+    );
+
+    $rawEdges = [];
+    $drawn    = [];
+    foreach ($interRows as $e) {
+        $a   = (int) $e['from_region'];
+        $b   = (int) $e['to_region'];
+        if (!isset($nodeMap[$a], $nodeMap[$b])) continue;
+        $key = min($a, $b) . ':' . max($a, $b);
+        if (!isset($drawn[$key])) {
+            $rawEdges[]    = [$a, $b];
+            $drawn[$key]   = true;
+        }
+    }
+
+    $dataMs = (hrtime(true) - $t0) / 1e6;
+
+    $t1        = hrtime(true);
+    $regionIds = array_keys($nodeMap);
+    $positions = map_layout_universe_force($regionIds, $rawEdges);
+    $layoutMs  = (hrtime(true) - $t1) / 1e6;
+
+    $sceneNodes = [];
+    foreach ($nodeMap as $rid => $r) {
+        $sceneNodes[$rid] = [
+            'id'             => $rid,
+            'name'           => $r['name'],
+            'security'       => $r['security'],
+            'x'              => (float) ($positions[$rid]['x'] ?? 0.5),
+            'y'              => (float) ($positions[$rid]['y'] ?? 0.5),
+            'role'           => 'region',
+            'hop'            => 0,
+            'threat_level'   => '',
+            'label_priority' => 1.0,
+            'system_count'   => $r['system_count'],
+        ];
+    }
+
+    $sceneEdges = [];
+    foreach ($rawEdges as [$a, $b]) {
+        if (isset($sceneNodes[$a], $sceneNodes[$b])) {
+            $sceneEdges[] = ['from' => $a, 'to' => $b, 'tier' => 'gate'];
+        }
+    }
+
+    $totalMs = (hrtime(true) - $t0) / 1e6;
+
+    return [
+        'version'       => MAP_SCENE_VERSION,
+        'layout'        => 'universe-aggregated-v1',
+        'scope'         => ['type' => 'universe', 'detail' => 'aggregated'],
+        'canvas'        => ['width' => 1200, 'height' => 800, 'pad' => 40],
+        'filter_prefix' => 'uni',
+        'nodes'         => $sceneNodes,
+        'edges'         => $sceneEdges,
+        'hulls'         => [],
+        'build_stats'   => [
+            'data_ms'    => round($dataMs, 1),
+            'layout_ms'  => round($layoutMs, 1),
+            'total_ms'   => round($totalMs, 1),
+            'cache_hit'  => false,
+            'node_count' => count($sceneNodes),
+            'edge_count' => count($sceneEdges),
+        ],
+    ];
+}
+
+/**
+ * Build a universe-level scene with every individual system (dense view).
+ * Regions are arranged in a grid; systems are grouped by constellation within
+ * each region cell.
+ */
+function map_build_universe_dense_scene(): ?array
+{
+    $t0 = hrtime(true);
+
+    $systems = db_select(
+        "SELECT s.system_id, s.system_name, s.security,
+                s.constellation_id, s.region_id
+         FROM ref_systems s
+         ORDER BY s.region_id, s.constellation_id, s.system_id"
+    );
+    if ($systems === []) return null;
+
+    $nodeMap  = [];
+    $byRegion = [];
+    foreach ($systems as $s) {
+        $sid = (int) $s['system_id'];
+        $rid = (int) $s['region_id'];
+        $nodeMap[$sid] = [
+            'id'               => $sid,
+            'name'             => (string) ($s['system_name'] ?? (string) $sid),
+            'security'         => (float)  ($s['security'] ?? 0.0),
+            'constellation_id' => (int)    ($s['constellation_id'] ?? 0),
+            'region_id'        => $rid,
+        ];
+        $byRegion[$rid][] = $sid;
+    }
+
+    // Fetch all intra-universe stargates in one query (no massive IN clause)
+    $allGates = db_select(
+        "SELECT g.system_id, g.dest_system_id
+         FROM ref_stargates g
+         JOIN ref_systems sa ON sa.system_id = g.system_id
+         JOIN ref_systems sb ON sb.system_id = g.dest_system_id"
+    );
+
+    $rawEdges = [];
+    $drawn    = [];
+    foreach ($allGates as $g) {
+        $a   = (int) $g['system_id'];
+        $b   = (int) $g['dest_system_id'];
+        $key = min($a, $b) . ':' . max($a, $b);
+        if (!isset($drawn[$key])) {
+            $rawEdges[]  = [$a, $b];
+            $drawn[$key] = true;
+        }
+    }
+
+    $dataMs = (hrtime(true) - $t0) / 1e6;
+    $t1     = hrtime(true);
+
+    // Layout: regions in a grid, systems within each region cell
+    $regionIds   = array_keys($byRegion);
+    $regionCount = count($regionIds);
+    $cols        = max(1, (int) ceil(sqrt($regionCount)));
+    $rows        = max(1, (int) ceil($regionCount / $cols));
+    $cellW       = 1.0 / $cols;
+    $cellH       = 1.0 / $rows;
+
+    $adjacency = map_build_adjacency($nodeMap, $rawEdges);
+    $positions = [];
+
+    foreach ($regionIds as $idx => $rid) {
+        $col   = $idx % $cols;
+        $row   = (int) floor($idx / $cols);
+        $cellX = $col * $cellW;
+        $cellY = $row * $cellH;
+
+        // Sub-node-map and sub-adjacency for this region
+        $regionNodeMap = [];
+        foreach ($byRegion[$rid] as $sid) {
+            $regionNodeMap[$sid] = $nodeMap[$sid];
+        }
+        $regionAdj = [];
+        foreach ($byRegion[$rid] as $sid) {
+            $regionAdj[$sid] = array_values(array_filter(
+                $adjacency[$sid] ?? [],
+                static fn($nb) => isset($regionNodeMap[$nb])
+            ));
+        }
+
+        $rPos = map_layout_region($regionNodeMap, $regionAdj);
+
+        // Scale into this cell (with 5% inset)
+        $pad = 0.05;
+        foreach ($byRegion[$rid] as $sid) {
+            $rx = (float) ($rPos[$sid]['x'] ?? 0.5);
+            $ry = (float) ($rPos[$sid]['y'] ?? 0.5);
+            $positions[$sid] = [
+                'x' => $cellX + ($pad + $rx * (1.0 - 2.0 * $pad)) * $cellW,
+                'y' => $cellY + ($pad + $ry * (1.0 - 2.0 * $pad)) * $cellH,
+            ];
+        }
+    }
+
+    $layoutMs = (hrtime(true) - $t1) / 1e6;
+
+    $sceneNodes = [];
+    foreach ($nodeMap as $sid => $n) {
+        $sceneNodes[$sid] = [
+            'id'             => $sid,
+            'name'           => $n['name'],
+            'security'       => $n['security'],
+            'x'              => (float) ($positions[$sid]['x'] ?? 0.5),
+            'y'              => (float) ($positions[$sid]['y'] ?? 0.5),
+            'role'           => 'surrounding',
+            'hop'            => 0,
+            'threat_level'   => '',
+            'label_priority' => 0.0,
+            'constellation_id' => $n['constellation_id'],
+        ];
+    }
+
+    $sceneEdges = [];
+    foreach ($rawEdges as [$a, $b]) {
+        if (isset($sceneNodes[$a], $sceneNodes[$b])) {
+            $sceneEdges[] = ['from' => $a, 'to' => $b, 'tier' => 'gate'];
+        }
+    }
+
+    $totalMs = (hrtime(true) - $t0) / 1e6;
+
+    return [
+        'version'       => MAP_SCENE_VERSION,
+        'layout'        => 'universe-dense-v1',
+        'scope'         => ['type' => 'universe', 'detail' => 'dense'],
+        'canvas'        => ['width' => 1600, 'height' => 1400, 'pad' => 20],
+        'filter_prefix' => 'uni',
+        'nodes'         => $sceneNodes,
+        'edges'         => $sceneEdges,
+        'hulls'         => [],
+        'build_stats'   => [
+            'data_ms'    => round($dataMs, 1),
+            'layout_ms'  => round($layoutMs, 1),
+            'total_ms'   => round($totalMs, 1),
+            'cache_hit'  => false,
+            'node_count' => count($sceneNodes),
+            'edge_count' => count($sceneEdges),
+        ],
+    ];
+}
